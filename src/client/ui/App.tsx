@@ -516,9 +516,19 @@ export default function App({ connection, session }: AppProps): React.ReactEleme
     const handlePromptSubmit = useCallback(
         (promptId: string, content: string) => {
             if (!content.trim()) return;
-            if (state.currentPromptId) return;
 
-            if (content.startsWith("/code")) {
+            const isCodePrompt = content.startsWith("/code");
+            const isStoryPrompt = content.startsWith("/story");
+
+            if (isCodePrompt) {
+                if (state.currentPromptId) {
+                    dispatch({
+                        type: "ERROR",
+                        message: "Code prompt already in progress.",
+                        code: "INVALID_MESSAGE",
+                    });
+                    return;
+                }
                 const codeContent = content.replace(/^\/code\s*/i, "");
                 if (!codeContent) {
                     dispatch({
@@ -533,7 +543,9 @@ export default function App({ connection, session }: AppProps): React.ReactEleme
                 return;
             }
 
-            const storyContent = content.replace(/^\/story\s*/i, "");
+            const storyContent = isStoryPrompt
+                ? content.replace(/^\/story\s*/i, "")
+                : content;
             if (!storyContent) {
                 dispatch({
                     type: "ERROR",
@@ -579,8 +591,7 @@ export default function App({ connection, session }: AppProps): React.ReactEleme
     );
 
     const currentReview = state.reviewQueue[0] ?? null;
-    let inputDisabled = state.currentPromptId !== null || currentReview !== null || state.partyEnded;
-    if (state.viewingMember) inputDisabled = true;
+    let inputDisabled = state.partyEnded || state.viewingMember !== null;
 
     // ─── Party ended overlay ───
     if (state.partyEnded) {
