@@ -10,6 +10,13 @@ import { Session } from "./client/session.js";
 import { DEFAULT_PORT, MAX_MEMBERS_DEFAULT } from "./shared/constants.js";
 import { decodeInviteCode, encodeInviteCode, isInviteCode } from "./shared/invite.js";
 import App from "./client/ui/App.js";
+import clipboardy from "clipboardy";
+import { basename } from "path";
+import { pool } from "./server/db.js";
+import { generateInitialStory } from "./server/story/agent.js";
+import { GoogleGenAI } from "@google/genai";
+import * as p from "@clack/prompts";
+import { GEMINI_MODEL_DEFAULT } from "./shared/constants.js";
 
 const program = new Command();
 
@@ -33,6 +40,36 @@ program
         setMaxMembers(maxMem);
         process.env["OVERMIND_PORT"] = String(port);
 
+        const projectRoot = process.env["OVERMIND_PROJECT_ROOT"] ?? process.cwd();
+        const projectId = basename(projectRoot);
+
+        // --- Core Features Setup Wizard ---
+        try {
+            const { rows } = await pool.query("SELECT COUNT(*) as count FROM features WHERE project_id = $1", [projectId]);
+            if (rows[0].count === "0" && isTTY) {
+                const apiKey = process.env["GEMINI_API_KEY"];
+                if (apiKey) {
+                    p.intro(`Welcome to Overmind! Looking at new project: ${projectId}`);
+                    const desc = await p.text({
+                        message: "What kind of project is this? (e.g. A task manager in React, A python API)",
+                        placeholder: "A multiplayer terminal in Typescript",
+                    });
+
+                    let initialContext = "";
+                    if (!p.isCancel(desc) && desc) {
+                        initialContext = `Project Description from Host: ${desc}\n\n`;
+                    }
+
+                    p.outro("Great! Setting up Core Features...");
+                    const ai = new GoogleGenAI({ apiKey });
+                    const model = process.env["OVERMIND_MODEL"] ?? GEMINI_MODEL_DEFAULT;
+                    await generateInitialStory(ai, model, projectRoot, projectId, initialContext);
+                }
+            }
+        } catch (e) {
+            console.error("[cli] Could not run setup wizard:", e);
+        }
+
         const wss = startServer();
 
         wss.on("listening", async () => {
@@ -44,8 +81,13 @@ program
                 publicUrl = await startNgrokTunnel(port);
                 inviteCode = encodeInviteCode({
                     partyCode: code,
-                    serverUrl: publicUrl,
+                    serverUrl: publicUrl.replace(/^tcp:\/\//, "ws://"),
                 });
+                try {
+                    clipboardy.writeSync(inviteCode);
+                } catch {
+                    // Ignore clipboard errors
+                }
             } catch (error) {
                 const missingToken = !process.env["NGROK_AUTHTOKEN"];
                 const hint = missingToken ? " Set NGROK_AUTHTOKEN to enable public tunnels." : "";
@@ -64,7 +106,7 @@ program
             } else {
                 console.log(`Party started! Code: ${code} (share this with your team)`);
                 if (inviteCode) {
-                    console.log(`Invite code: ${inviteCode}`);
+                    console.log(`Invite code: ${inviteCode} (copied to clipboard!)`);
                     console.log(`Public URL: ${publicUrl}`);
                 }
                 console.log(`Waiting for members...`);
@@ -231,6 +273,9 @@ function normalizeServerUrl(input: string): string {
     if (trimmed.startsWith("ws://") || trimmed.startsWith("wss://")) {
         return trimmed;
     }
+    if (trimmed.startsWith("tcp://")) {
+        return `ws://${trimmed.slice("tcp://".length)}`;
+    }
     if (trimmed.startsWith("http://")) {
         return `ws://${trimmed.slice("http://".length)}`;
     }
@@ -243,6 +288,7 @@ function normalizeServerUrl(input: string): string {
 async function startNgrokTunnel(port: number): Promise<string> {
     const authtoken = process.env["NGROK_AUTHTOKEN"];
     const tunnel = await ngrok.connect({
+        proto: "tcp",
         addr: port,
         authtoken,
     });

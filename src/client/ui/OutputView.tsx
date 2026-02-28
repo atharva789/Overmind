@@ -6,6 +6,7 @@ import Badge from "./components/Badge.js";
 export type OutputStatus =
     | "queued"
     | "greenlit"
+    | "feature-created"
     | "redlit"
     | "approved"
     | "denied"
@@ -19,6 +20,7 @@ export interface OutputEntry {
     status: OutputStatus;
     message: string;
     timestamp: number;
+    promptContent?: string;
 }
 
 interface OutputViewProps {
@@ -26,15 +28,16 @@ interface OutputViewProps {
     currentPromptId: string | null;
 }
 
-const STATUS_CONFIG: Record<OutputStatus, { color: string; label: string }> = {
-    queued: { color: "blue", label: "QUEUED" },
-    greenlit: { color: "green", label: "GREENLIT" },
-    redlit: { color: "red", label: "REDLIT" },
-    approved: { color: "green", label: "APPROVED" },
-    denied: { color: "red", label: "DENIED" },
-    diff: { color: "cyan", label: "DIFF" },
-    complete: { color: "green", label: "COMPLETE" },
-    error: { color: "red", label: "ERROR" },
+const STATUS_CONFIG: Record<OutputStatus, { color: string; label: string; dot: string }> = {
+    queued: { color: "blue", label: "QUEUED", dot: "○" },
+    greenlit: { color: "green", label: "GREENLIT", dot: "●" },
+    "feature-created": { color: "yellow", label: "NEW FEATURE", dot: "●" },
+    redlit: { color: "red", label: "REDLIT", dot: "●" },
+    approved: { color: "green", label: "APPROVED", dot: "●" },
+    denied: { color: "red", label: "DENIED", dot: "●" },
+    diff: { color: "cyan", label: "DIFF", dot: "◆" },
+    complete: { color: "green", label: "COMPLETE", dot: "✓" },
+    error: { color: "red", label: "ERROR", dot: "✕" },
 };
 
 const MAX_VISIBLE = 20;
@@ -68,6 +71,22 @@ export default function OutputView({
             {visible.map((entry) => {
                 const config = STATUS_CONFIG[entry.status];
                 const isActive = entry.status === "queued";
+                const isVerdict = entry.status === "greenlit" || entry.status === "redlit" || entry.status === "feature-created";
+
+                if (isVerdict && entry.promptContent) {
+                    // Show prompt text with colored dot for verdicts
+                    return (
+                        <Box key={entry.id} flexDirection="column" marginBottom={0}>
+                            <Box>
+                                <Text color={config.color} bold>{config.dot} </Text>
+                                <Text wrap="truncate">{entry.promptContent}</Text>
+                            </Box>
+                            <Text color="gray" wrap="truncate">
+                                {"  "}{entry.message}
+                            </Text>
+                        </Box>
+                    );
+                }
 
                 return (
                     <Box key={entry.id} flexDirection="column" marginBottom={0}>

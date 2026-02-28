@@ -138,6 +138,14 @@ const HostReviewRequestMessage = z.object({
     }),
 });
 
+const FeatureCreatedMessage = z.object({
+    type: z.literal("feature-created"),
+    payload: z.object({
+        promptId: z.string(),
+        title: z.string(),
+    }),
+});
+
 const ActivityMessage = z.object({
     type: z.literal("activity"),
     payload: z.object({
@@ -225,6 +233,8 @@ const MemberExecutionCompleteMessage = z.object({
     }),
 });
 
+
+
 export const ServerMessageSchema = z.discriminatedUnion("type", [
     JoinAckMessage,
     MemberJoinedMessage,
@@ -235,6 +245,7 @@ export const ServerMessageSchema = z.discriminatedUnion("type", [
     PromptApprovedMessage,
     PromptDeniedMessage,
     HostReviewRequestMessage,
+    FeatureCreatedMessage,
     ActivityMessage,
     ErrorMessage,
     MemberStatusMessage,

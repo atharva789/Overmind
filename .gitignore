@@ -4,3 +4,4 @@ dist/
 .overmind/
 modal-bridge/__pycache__/
 modal-bridge/.venv/
+orchestrator.log

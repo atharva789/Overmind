@@ -114,6 +114,13 @@ const HostReviewRequestMessage = z.object({
         conflicts: z.array(z.string()),
     }),
 });
+const FeatureCreatedMessage = z.object({
+    type: z.literal("feature-created"),
+    payload: z.object({
+        promptId: z.string(),
+        title: z.string(),
+    }),
+});
 const ActivityMessage = z.object({
     type: z.literal("activity"),
     payload: z.object({
@@ -201,6 +208,7 @@ export const ServerMessageSchema = z.discriminatedUnion("type", [
     PromptApprovedMessage,
     PromptDeniedMessage,
     HostReviewRequestMessage,
+    FeatureCreatedMessage,
     ActivityMessage,
     ErrorMessage,
     MemberStatusMessage,

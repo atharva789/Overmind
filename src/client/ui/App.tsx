@@ -25,6 +25,7 @@ interface AppState {
     events: ActivityEvent[];
     connectionStatus: "connected" | "reconnecting" | "disconnected";
     currentPromptId: string | null;
+    promptContents: Record<string, string>;
     isHost: boolean;
     partyCode: string;
     reviewQueue: ReviewRequest[];
@@ -44,6 +45,7 @@ const initialState: AppState = {
     events: [],
     connectionStatus: "disconnected",
     currentPromptId: null,
+    promptContents: {},
     isHost: false,
     partyCode: "",
     reviewQueue: [],
@@ -74,8 +76,9 @@ type Action =
     | { type: "HOST_REVIEW_REQUEST"; promptId: string; username: string; content: string; reasoning: string; conflicts: string[] }
     | { type: "ACTIVITY"; username: string; event: string; timestamp: number }
     | { type: "ERROR"; message: string; code: string }
-    | { type: "LOCAL_PROMPT_SUBMITTED"; promptId: string }
+    | { type: "LOCAL_PROMPT_SUBMITTED"; promptId: string; content: string }
     | { type: "REVIEW_SHIFT" }
+    | { type: "FEATURE_CREATED"; promptId: string; title: string }
     | { type: "EXECUTION_QUEUED"; promptId: string }
     | { type: "EXECUTION_UPDATE"; promptId: string; stage: string }
     | { type: "EXECUTION_COMPLETE"; promptId: string; files: FileChange[]; summary: string }
@@ -88,7 +91,8 @@ function addOutput(
     outputs: OutputEntry[],
     promptId: string,
     status: OutputStatus,
-    message: string
+    message: string,
+    promptContent?: string
 ): OutputEntry[] {
     return [
         ...outputs,
@@ -98,6 +102,7 @@ function addOutput(
             status,
             message,
             timestamp: Date.now(),
+            promptContent,
         },
     ];
 }
@@ -151,7 +156,12 @@ function reducer(state: AppState, action: Action): AppState {
             };
 
         case "LOCAL_PROMPT_SUBMITTED":
-            return { ...state, currentPromptId: action.promptId, viewingMember: null };
+            return {
+                ...state,
+                currentPromptId: action.promptId,
+                viewingMember: null,
+                promptContents: { ...state.promptContents, [action.promptId]: action.content },
+            };
 
         case "PROMPT_QUEUED":
             return {
@@ -162,17 +172,27 @@ function reducer(state: AppState, action: Action): AppState {
         case "PROMPT_GREENLIT":
             return {
                 ...state,
-                outputs: addOutput(state.outputs, action.promptId, "greenlit", action.reasoning),
+                outputs: addOutput(
+                    state.outputs, action.promptId, "greenlit", action.reasoning,
+                    state.promptContents[action.promptId]
+                ),
+            };
+
+        case "FEATURE_CREATED":
+            return {
+                ...state,
+                outputs: addOutput(
+                    state.outputs, action.promptId, "feature-created", `Assigned to New Core Feature: ${action.title}`,
+                    state.promptContents[action.promptId]
+                ),
             };
 
         case "PROMPT_REDLIT":
             return {
                 ...state,
                 outputs: addOutput(
-                    state.outputs,
-                    action.promptId,
-                    "redlit",
-                    `${action.reasoning}`
+                    state.outputs, action.promptId, "redlit", action.reasoning,
+                    state.promptContents[action.promptId]
                 ),
             };
 
@@ -409,6 +429,13 @@ export default function App({ connection, session, inviteCode }: AppProps): Reac
                 case "prompt-approved":
                     dispatch({ type: "PROMPT_APPROVED", promptId: msg.payload.promptId });
                     break;
+                case "feature-created":
+                    dispatch({
+                        type: "FEATURE_CREATED",
+                        promptId: msg.payload.promptId,
+                        title: msg.payload.title,
+                    });
+                    break;
                 case "prompt-denied":
                     dispatch({
                         type: "PROMPT_DENIED",
@@ -489,7 +516,7 @@ export default function App({ connection, session, inviteCode }: AppProps): Reac
             if (!content.trim()) return;
             if (state.currentPromptId) return;
 
-            dispatch({ type: "LOCAL_PROMPT_SUBMITTED", promptId });
+            dispatch({ type: "LOCAL_PROMPT_SUBMITTED", promptId, content });
             session.submitPrompt(promptId, content);
         },
         [session, state.currentPromptId]
