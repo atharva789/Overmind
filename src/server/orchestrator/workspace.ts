@@ -130,20 +130,72 @@ export class WorkspaceFiles {
         this.writeTempFile(afterPath, after);
 
         try {
+            const relBeforePath = this.normalizeDiffPath(
+                path.relative(this.projectRoot, beforePath)
+            );
+            const relAfterPath = this.normalizeDiffPath(
+                path.relative(this.projectRoot, afterPath)
+            );
             const diff = await this.gitClient.diff([
                 "--no-index",
-                "--label",
-                `a/${relPath}`,
-                "--label",
-                `b/${relPath}`,
-                beforePath,
-                afterPath,
+                relBeforePath,
+                relAfterPath,
             ]);
-            return diff.trim() ? diff : null;
+            const normalized = this.replaceDiffLabels(
+                diff,
+                relPath,
+                relBeforePath,
+                relAfterPath
+            );
+            return normalized.trim() ? normalized : null;
         } finally {
             this.removeTempFile(beforePath);
             this.removeTempFile(afterPath);
         }
+    }
+
+    /**
+     * Normalize diff paths to use forward slashes.
+     * Does not access the filesystem.
+     * Edge cases: Returns empty strings unchanged.
+     * Invariants: Output never contains backslashes.
+     */
+    private normalizeDiffPath(inputPath: string): string {
+        return inputPath.replace(/\\/g, "/");
+    }
+
+    /**
+     * Replace temp file labels in a diff with the target relative path.
+     * Does not alter diff hunk content.
+     * Edge cases: Leaves diff unchanged when headers are missing.
+     * Invariants: Header paths always match the provided relPath.
+     */
+    private replaceDiffLabels(
+        diff: string,
+        relPath: string,
+        beforePath: string,
+        afterPath: string
+    ): string {
+        const normalizedRelPath = this.normalizeDiffPath(relPath);
+        const beforeLabel = `a/${beforePath}`;
+        const afterLabel = `b/${afterPath}`;
+        const targetBefore = `a/${normalizedRelPath}`;
+        const targetAfter = `b/${normalizedRelPath}`;
+
+        return diff.split("\n").map((line) => {
+            if (line.startsWith("diff --git ")) {
+                return line
+                    .replace(beforeLabel, targetBefore)
+                    .replace(afterLabel, targetAfter);
+            }
+            if (line.startsWith("--- ")) {
+                return line.replace(beforeLabel, targetBefore);
+            }
+            if (line.startsWith("+++ ")) {
+                return line.replace(afterLabel, targetAfter);
+            }
+            return line;
+        }).join("\n");
     }
 
     /**
