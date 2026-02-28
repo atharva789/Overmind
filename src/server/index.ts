@@ -15,6 +15,9 @@ import {
 } from "../shared/constants.js";
 import { evaluatePrompt, greenlightLog } from "./greenlight/agent.js";
 import { executePromptChanges } from "./execution/agent.js";
+import { Orchestrator } from "./orchestrator/index.js";
+import type { EvaluationResult as OrchestratorEvaluation } from "./orchestrator/index.js";
+import { MODAL_BRIDGE_URL } from "../shared/constants.js";
 
 const generateConnectionId = customAlphabet(
     "abcdefghijklmnopqrstuvwxyz0123456789",
@@ -31,6 +34,14 @@ const execQueues: Map<string, Promise<void>> = new Map();
 const pendingParties: Map<string, string> = new Map();
 
 let maxMembers = MAX_MEMBERS_DEFAULT;
+
+// Modal orchestrator instance (null = local mode)
+const useModal = process.env["OVERMIND_LOCAL"] !== "1";
+let orchestrator: Orchestrator | null = null;
+if (useModal) {
+    const projectRoot = process.env["OVERMIND_PROJECT_ROOT"] ?? process.cwd();
+    orchestrator = new Orchestrator(projectRoot, MODAL_BRIDGE_URL);
+}
 
 export function setMaxMembers(n: number): void {
     maxMembers = n;
@@ -443,7 +454,7 @@ export function startServer(): WebSocketServer {
         evalQueues.set(partyCode, next);
     }
 
-    // ─── Sequential execution queue per party (Phase 5 real execution) ───
+    // ─── Sequential execution queue per party (Modal or local) ───
 
     function enqueueExecution(
         party: Party,
@@ -466,59 +477,128 @@ export function startServer(): WebSocketServer {
 
             if (!parties.has(partyCode)) return;
 
-            party.sendTo(connectionId, {
-                type: "execution-update",
-                payload: { promptId: entry.promptId, stage: "Agent is working..." },
-            });
-            party.broadcast({
-                type: "member-execution-update",
-                payload: { username: entry.username, promptId: entry.promptId, stage: "Agent is working..." },
-            });
-
-            // Call real execution agent
-            const result = await executePromptChanges(entry, partyCode, greenlightLog);
-
-            if (!parties.has(partyCode)) return;
-
-            if (result.success) {
-                const totalAdded = result.files.reduce((sum, f) => sum + f.linesAdded, 0);
-                const totalRemoved = result.files.reduce((sum, f) => sum + f.linesRemoved, 0);
-                const summaryMsg = `Applied ${result.files.length} files (+${totalAdded}/-${totalRemoved}).`;
-
-                // Send execution-complete with real diffs
-                party.sendTo(connectionId, {
-                    type: "execution-complete",
-                    payload: {
-                        promptId: entry.promptId,
-                        files: result.files,
-                        summary: summaryMsg,
+            if (orchestrator) {
+                // ─── Modal execution path ───
+                const evaluation: OrchestratorEvaluation = {
+                    affectedFiles: entry.scope ?? [],
+                    executionHints: {
+                        requiresBuild: false,
+                        requiresTests: false,
                     },
-                });
+                };
 
-                party.broadcast({
-                    type: "member-execution-complete",
-                    payload: {
-                        username: entry.username,
-                        promptId: entry.promptId,
-                        files: result.files,
-                        summary: summaryMsg,
-                    },
-                });
+                for await (const event of orchestrator.execute(entry, evaluation)) {
+                    if (!parties.has(partyCode)) return;
 
-                party.broadcast({
-                    type: "activity",
-                    payload: {
-                        username: entry.username,
-                        event: `'s changes were applied (${result.files.length} files, +${totalAdded}/-${totalRemoved})`,
-                        timestamp: Date.now(),
-                    },
-                });
+                    switch (event.type) {
+                        case "stage":
+                            party.sendTo(connectionId, {
+                                type: "execution-update",
+                                payload: { promptId: entry.promptId, stage: event.stage, detail: event.detail },
+                            });
+                            party.broadcast({
+                                type: "member-execution-update",
+                                payload: { username: entry.username, promptId: entry.promptId, stage: event.stage },
+                            });
+                            break;
+
+                        case "complete": {
+                            const totalAdded = event.result.files.reduce((sum, f) => sum + f.linesAdded, 0);
+                            const totalRemoved = event.result.files.reduce((sum, f) => sum + f.linesRemoved, 0);
+                            const summaryMsg = event.result.summary;
+
+                            party.sendTo(connectionId, {
+                                type: "execution-complete",
+                                payload: {
+                                    promptId: entry.promptId,
+                                    files: event.result.files,
+                                    summary: summaryMsg,
+                                },
+                            });
+                            party.broadcast({
+                                type: "member-execution-complete",
+                                payload: {
+                                    username: entry.username,
+                                    promptId: entry.promptId,
+                                    files: event.result.files,
+                                    summary: summaryMsg,
+                                },
+                            });
+                            party.broadcast({
+                                type: "activity",
+                                payload: {
+                                    username: entry.username,
+                                    event: `'s changes were applied (${event.result.files.length} files, +${totalAdded}/-${totalRemoved})`,
+                                    timestamp: Date.now(),
+                                },
+                            });
+                            break;
+                        }
+
+                        case "error":
+                            party.sendTo(connectionId, {
+                                type: "error",
+                                payload: { message: `Execution failed: ${event.message}`, code: ErrorCode.INVALID_MESSAGE },
+                            });
+                            break;
+
+                        case "agent-output":
+                        case "files-changed":
+                            // Consumed internally, not sent to clients in v1
+                            break;
+                    }
+                }
             } else {
+                // ─── Local execution path (Gemini) ───
                 party.sendTo(connectionId, {
-                    type: "error",
-                    // Use INVALID_MESSAGE code or something similar
-                    payload: { message: `Execution failed: ${result.summary}`, code: ErrorCode.INVALID_MESSAGE },
+                    type: "execution-update",
+                    payload: { promptId: entry.promptId, stage: "Agent is working..." },
                 });
+                party.broadcast({
+                    type: "member-execution-update",
+                    payload: { username: entry.username, promptId: entry.promptId, stage: "Agent is working..." },
+                });
+
+                const result = await executePromptChanges(entry, partyCode, greenlightLog);
+
+                if (!parties.has(partyCode)) return;
+
+                if (result.success) {
+                    const totalAdded = result.files.reduce((sum, f) => sum + f.linesAdded, 0);
+                    const totalRemoved = result.files.reduce((sum, f) => sum + f.linesRemoved, 0);
+                    const summaryMsg = `Applied ${result.files.length} files (+${totalAdded}/-${totalRemoved}).`;
+
+                    party.sendTo(connectionId, {
+                        type: "execution-complete",
+                        payload: {
+                            promptId: entry.promptId,
+                            files: result.files,
+                            summary: summaryMsg,
+                        },
+                    });
+                    party.broadcast({
+                        type: "member-execution-complete",
+                        payload: {
+                            username: entry.username,
+                            promptId: entry.promptId,
+                            files: result.files,
+                            summary: summaryMsg,
+                        },
+                    });
+                    party.broadcast({
+                        type: "activity",
+                        payload: {
+                            username: entry.username,
+                            event: `'s changes were applied (${result.files.length} files, +${totalAdded}/-${totalRemoved})`,
+                            timestamp: Date.now(),
+                        },
+                    });
+                } else {
+                    party.sendTo(connectionId, {
+                        type: "error",
+                        payload: { message: `Execution failed: ${result.summary}`, code: ErrorCode.INVALID_MESSAGE },
+                    });
+                }
             }
 
             party.broadcast({

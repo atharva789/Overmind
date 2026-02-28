@@ -25,7 +25,7 @@ export const RECONNECT_INITIAL_MS = 1000;
 export const RECONNECT_MAX_MS = 10000;
 
 // ─── Greenlight ───
-export const GREENLIGHT_BACKEND_DEFAULT = "glm";
+export const GREENLIGHT_BACKEND_DEFAULT = "gemini";
 export const GEMINI_MODEL_DEFAULT = "gemini-2.0-flash";
 export const GLM_MODEL_DEFAULT = "glm-5.0";
 export const MAX_TOOL_ROUNDS = 5;
@@ -36,5 +36,19 @@ export const LOG_TRUNCATE_CHARS = 200;
 export const MAX_CONTEXT_PAYLOAD_CHARS = 20000;
 
 // ─── Orchestrator ───
-export const LOCK_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes for remote execution
-export const ALWAYS_SYNC_PATTERNS = (process.env["OVERMIND_ALWAYS_SYNC"] ?? "context.md,package.json,tsconfig.json").split(",");
+export const MODAL_BRIDGE_PORT = Number(
+    process.env["OVERMIND_BRIDGE_PORT"] ?? "8377",
+);
+export const MODAL_BRIDGE_URL =
+    `http://localhost:${MODAL_BRIDGE_PORT}`;
+export const AGENT_TIMEOUT_S = Number(
+    process.env["OVERMIND_AGENT_TIMEOUT"] ?? "300",
+);
+export const MAX_CONCURRENT_SANDBOXES = Number(
+    process.env["OVERMIND_MAX_AGENTS"] ?? "3",
+);
+export const LOCK_TIMEOUT_MS = 5 * 60 * 1000;
+export const ALWAYS_SYNC_PATTERNS = (
+    process.env["OVERMIND_ALWAYS_SYNC"] ??
+    "context.md,package.json,tsconfig.json"
+).split(",");

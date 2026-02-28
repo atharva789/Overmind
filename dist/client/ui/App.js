@@ -15,6 +15,7 @@ const initialState = {
     events: [],
     connectionStatus: "disconnected",
     currentPromptId: null,
+    promptContents: {},
     isHost: false,
     partyCode: "",
     reviewQueue: [],
@@ -26,7 +27,7 @@ const initialState = {
     errorMessage: null,
     partyEnded: false,
 };
-function addOutput(outputs, promptId, status, message) {
+function addOutput(outputs, promptId, status, message, promptContent) {
     return [
         ...outputs,
         {
@@ -35,6 +36,7 @@ function addOutput(outputs, promptId, status, message) {
             status,
             message,
             timestamp: Date.now(),
+            promptContent,
         },
     ];
 }
@@ -78,7 +80,12 @@ function reducer(state, action) {
                 members: state.members.map((m) => m.username === action.username ? { ...m, status: action.status } : m),
             };
         case "LOCAL_PROMPT_SUBMITTED":
-            return { ...state, currentPromptId: action.promptId, viewingMember: null };
+            return {
+                ...state,
+                currentPromptId: action.promptId,
+                viewingMember: null,
+                promptContents: { ...state.promptContents, [action.promptId]: action.content },
+            };
         case "PROMPT_QUEUED":
             return {
                 ...state,
@@ -87,12 +94,12 @@ function reducer(state, action) {
         case "PROMPT_GREENLIT":
             return {
                 ...state,
-                outputs: addOutput(state.outputs, action.promptId, "greenlit", action.reasoning),
+                outputs: addOutput(state.outputs, action.promptId, "greenlit", action.reasoning, state.promptContents[action.promptId]),
             };
         case "PROMPT_REDLIT":
             return {
                 ...state,
-                outputs: addOutput(state.outputs, action.promptId, "redlit", `${action.reasoning}`),
+                outputs: addOutput(state.outputs, action.promptId, "redlit", action.reasoning, state.promptContents[action.promptId]),
             };
         case "PROMPT_APPROVED":
             return {
@@ -378,7 +385,7 @@ export default function App({ connection, session, inviteCode }) {
             return;
         if (state.currentPromptId)
             return;
-        dispatch({ type: "LOCAL_PROMPT_SUBMITTED", promptId });
+        dispatch({ type: "LOCAL_PROMPT_SUBMITTED", promptId, content });
         session.submitPrompt(promptId, content);
     }, [session, state.currentPromptId]);
     const handleTyping = useCallback(() => {

@@ -36,7 +36,7 @@ program
             publicUrl = await startNgrokTunnel(port);
             inviteCode = encodeInviteCode({
                 partyCode: code,
-                serverUrl: publicUrl,
+                serverUrl: publicUrl.replace(/^tcp:\/\//, "ws://"),
             });
         }
         catch (error) {
@@ -198,6 +198,9 @@ function normalizeServerUrl(input) {
     if (trimmed.startsWith("ws://") || trimmed.startsWith("wss://")) {
         return trimmed;
     }
+    if (trimmed.startsWith("tcp://")) {
+        return `ws://${trimmed.slice("tcp://".length)}`;
+    }
     if (trimmed.startsWith("http://")) {
         return `ws://${trimmed.slice("http://".length)}`;
     }
@@ -209,6 +212,7 @@ function normalizeServerUrl(input) {
 async function startNgrokTunnel(port) {
     const authtoken = process.env["NGROK_AUTHTOKEN"];
     const tunnel = await ngrok.connect({
+        proto: "tcp",
         addr: port,
         authtoken,
     });

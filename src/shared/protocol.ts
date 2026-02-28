@@ -209,6 +209,15 @@ const MemberExecutionCompleteMessage = z.object({
     }),
 });
 
+const SandboxStatusMessage = z.object({
+    type: z.literal("sandbox-status"),
+    payload: z.object({
+        promptId: z.string(),
+        sandboxId: z.string(),
+        status: z.string(),
+    }),
+});
+
 export const ServerMessageSchema = z.discriminatedUnion("type", [
     JoinAckMessage,
     MemberJoinedMessage,
@@ -228,6 +237,7 @@ export const ServerMessageSchema = z.discriminatedUnion("type", [
     SystemStatusMessage,
     MemberExecutionUpdateMessage,
     MemberExecutionCompleteMessage,
+    SandboxStatusMessage,
 ]);
 
 export type ServerMessage = z.infer<typeof ServerMessageSchema>;

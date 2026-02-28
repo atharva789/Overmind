@@ -6,6 +6,7 @@ export interface OutputEntry {
     status: OutputStatus;
     message: string;
     timestamp: number;
+    promptContent?: string;
 }
 interface OutputViewProps {
     outputs: OutputEntry[];

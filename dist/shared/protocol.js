@@ -177,6 +177,14 @@ const MemberExecutionCompleteMessage = z.object({
         summary: z.string(),
     }),
 });
+const SandboxStatusMessage = z.object({
+    type: z.literal("sandbox-status"),
+    payload: z.object({
+        promptId: z.string(),
+        sandboxId: z.string(),
+        status: z.string(),
+    }),
+});
 export const ServerMessageSchema = z.discriminatedUnion("type", [
     JoinAckMessage,
     MemberJoinedMessage,
@@ -196,6 +204,7 @@ export const ServerMessageSchema = z.discriminatedUnion("type", [
     SystemStatusMessage,
     MemberExecutionUpdateMessage,
     MemberExecutionCompleteMessage,
+    SandboxStatusMessage,
 ]);
 // ─── Parsers (never throw, return null on invalid) ───
 export function parseClientMessage(data) {

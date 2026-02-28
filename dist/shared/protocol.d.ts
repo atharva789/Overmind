@@ -661,6 +661,35 @@ export declare const ServerMessageSchema: z.ZodDiscriminatedUnion<"type", [z.Zod
         }[];
         summary: string;
     };
+}>, z.ZodObject<{
+    type: z.ZodLiteral<"sandbox-status">;
+    payload: z.ZodObject<{
+        promptId: z.ZodString;
+        sandboxId: z.ZodString;
+        status: z.ZodString;
+    }, "strip", z.ZodTypeAny, {
+        status: string;
+        promptId: string;
+        sandboxId: string;
+    }, {
+        status: string;
+        promptId: string;
+        sandboxId: string;
+    }>;
+}, "strip", z.ZodTypeAny, {
+    type: "sandbox-status";
+    payload: {
+        status: string;
+        promptId: string;
+        sandboxId: string;
+    };
+}, {
+    type: "sandbox-status";
+    payload: {
+        status: string;
+        promptId: string;
+        sandboxId: string;
+    };
 }>]>;
 export type ServerMessage = z.infer<typeof ServerMessageSchema>;
 export declare function parseClientMessage(data: unknown): ClientMessage | null;

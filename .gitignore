@@ -1,3 +1,7 @@
 node_modules/
 dist/
 .env
+.overmind/
+modal-bridge/__pycache__/
+modal-bridge/.venv/
+orchestrator.log
