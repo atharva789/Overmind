@@ -10,6 +10,7 @@ import { Session } from "./client/session.js";
 import { DEFAULT_PORT, MAX_MEMBERS_DEFAULT } from "./shared/constants.js";
 import { decodeInviteCode, encodeInviteCode, isInviteCode } from "./shared/invite.js";
 import App from "./client/ui/App.js";
+import clipboardy from "clipboardy";
 
 const program = new Command();
 
@@ -46,6 +47,11 @@ program
                     partyCode: code,
                     serverUrl: publicUrl.replace(/^tcp:\/\//, "ws://"),
                 });
+                try {
+                    clipboardy.writeSync(inviteCode);
+                } catch {
+                    // Ignore clipboard errors
+                }
             } catch (error) {
                 const missingToken = !process.env["NGROK_AUTHTOKEN"];
                 const hint = missingToken ? " Set NGROK_AUTHTOKEN to enable public tunnels." : "";
@@ -64,7 +70,7 @@ program
             } else {
                 console.log(`Party started! Code: ${code} (share this with your team)`);
                 if (inviteCode) {
-                    console.log(`Invite code: ${inviteCode}`);
+                    console.log(`Invite code: ${inviteCode} (copied to clipboard!)`);
                     console.log(`Public URL: ${publicUrl}`);
                 }
                 console.log(`Waiting for members...`);
