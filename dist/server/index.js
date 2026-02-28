@@ -9,7 +9,7 @@ import { customAlphabet } from "nanoid";
 import { spawn } from "node:child_process";
 import { Party } from "./party.js";
 import { parseClientMessage } from "../shared/protocol.js";
-import { DEFAULT_PORT, JOIN_TIMEOUT_MS, CONNECTION_ID_LENGTH, PARTY_CODE_ALPHABET, PARTY_CODE_LENGTH, MAX_MEMBERS_DEFAULT, MODAL_BRIDGE_URL, MODAL_BRIDGE_PORT, BRIDGE_HEALTH_INTERVAL_MS, ErrorCode, } from "../shared/constants.js";
+import { DEFAULT_PORT, JOIN_TIMEOUT_MS, CONNECTION_ID_LENGTH, PARTY_CODE_ALPHABET, PARTY_CODE_LENGTH, MAX_MEMBERS_DEFAULT, MODAL_BRIDGE_URL, MODAL_BRIDGE_PORT, BRIDGE_HEALTH_INTERVAL_MS, OVERMIND_ORCHESTRATOR_URL, ErrorCode, } from "../shared/constants.js";
 import { evaluatePrompt } from "./greenlight/agent.js";
 import { Orchestrator } from "./orchestrator/index.js";
 const generateConnectionId = customAlphabet("abcdefghijklmnopqrstuvwxyz0123456789", CONNECTION_ID_LENGTH);
@@ -58,6 +58,25 @@ function isLocalMode() {
     return process.env["OVERMIND_LOCAL"] === "1";
 }
 /**
+ * Decide whether remote orchestrator mode is enabled.
+ * Does not validate the URL.
+ */
+function isRemoteOrchestratorEnabled() {
+    return OVERMIND_ORCHESTRATOR_URL.trim().length > 0;
+}
+/**
+ * Build the /health endpoint for the remote orchestrator.
+ * Does not perform network calls.
+ */
+function buildRemoteOrchestratorHealthUrl() {
+    const trimmed = OVERMIND_ORCHESTRATOR_URL.replace(/\/+$/u, "");
+    const executeSuffix = "/execute";
+    if (trimmed.endsWith(executeSuffix)) {
+        return `${trimmed.slice(0, -executeSuffix.length)}/health`;
+    }
+    return `${trimmed}/health`;
+}
+/**
  * Update execution backend availability and broadcast to members.
  * Does not perform any health checks itself.
  */
@@ -99,12 +118,22 @@ function broadcastSystemStatus() {
     }
 }
 /**
- * Start the Modal bridge process and health checks if needed.
+ * Start execution health checks for the active backend.
  * Does not throw; failures mark execution backend unavailable.
  */
 async function initBridge() {
     if (isLocalMode()) {
         setExecutionBackendAvailable(true);
+        return;
+    }
+    if (isRemoteOrchestratorEnabled()) {
+        await checkRemoteOrchestratorHealth();
+        if (bridgeHealthTimer) {
+            clearInterval(bridgeHealthTimer);
+        }
+        bridgeHealthTimer = setInterval(() => {
+            void checkRemoteOrchestratorHealth();
+        }, BRIDGE_HEALTH_INTERVAL_MS);
         return;
     }
     spawnBridgeProcess();
@@ -153,6 +182,29 @@ async function checkBridgeHealth() {
     catch (err) {
         log(`Bridge health check failed: ${String(err)}`);
         setExecutionBackendAvailable(false);
+    }
+}
+/**
+ * Check remote orchestrator health and update availability.
+ * Does not throw; failures mark execution unavailable.
+ */
+async function checkRemoteOrchestratorHealth() {
+    const url = buildRemoteOrchestratorHealthUrl();
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 5000);
+    try {
+        const res = await fetch(url, { signal: controller.signal });
+        if (!res.ok)
+            throw new Error(`HTTP ${res.status}`);
+        const data = (await res.json());
+        setExecutionBackendAvailable(Boolean(data.llm_connected));
+    }
+    catch (err) {
+        log(`Remote orchestrator health check failed: ${String(err)}`);
+        setExecutionBackendAvailable(false);
+    }
+    finally {
+        clearTimeout(timer);
     }
 }
 // ─── Public API ───
