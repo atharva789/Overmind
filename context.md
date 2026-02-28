@@ -10,6 +10,7 @@ structured review and execution pipeline.
   and execution simulation
 - **Client**: Ink-based TUI with connection management and session handling
 - **Repository Guard**: Joins require matching GitHub repository identifiers
+- **Story Streamer**: FIFO Gemini streaming into `story.md`
 
 ## Directory Layout
 
@@ -48,11 +49,12 @@ src/
 
 ## Communication Protocol
 
-Client → Server: `join`, `prompt-submit`, `host-verdict`, `status-update`
+Client → Server: `join`, `prompt-submit`, `PromptForStory`, `host-verdict`,
+`status-update`
 Server → Client: `join-ack`, `member-joined`, `member-left`, `prompt-queued`,
 `prompt-approved`, `prompt-denied`, `host-review-request`, `execution-queued`,
 `execution-update`, `execution-complete`, `system-status`, `activity`, `error`,
-`member-status`
+`member-status`, `StoryChunk`, `StoryComplete`
 
 ## Execution (Phase 4 Simulation)
 

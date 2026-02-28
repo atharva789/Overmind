@@ -1,4 +1,8 @@
 import { jsxs as _jsxs, jsx as _jsx } from "react/jsx-runtime";
+// Purpose: Capture prompt input and emit submit/typing events.
+// Behavior: Tracks idle/typing state and emits prompt submissions.
+// Assumptions: Parent components handle prompt routing and validation.
+// Invariants: Input state is local and cleared after submit.
 import { useState, useRef, useCallback, useEffect } from "react";
 import { Box, Text } from "ink";
 import TextInput from "ink-text-input";
@@ -48,6 +52,6 @@ export default function PromptInput({ disabled, onSubmit, onTyping, onIdle, }) {
     if (disabled) {
         return (_jsxs(Box, { paddingX: 1, children: [_jsxs(Text, { color: "gray", children: [">", " "] }), _jsx(Text, { dimColor: true, children: "Waiting for current prompt to complete..." })] }));
     }
-    return (_jsxs(Box, { paddingX: 1, children: [_jsxs(Text, { color: "green", bold: true, children: [">", " "] }), _jsx(TextInput, { value: value, onChange: handleChange, onSubmit: handleSubmit, placeholder: "Type a prompt..." })] }));
+    return (_jsxs(Box, { paddingX: 1, children: [_jsxs(Text, { color: "green", bold: true, children: [">", " "] }), _jsx(TextInput, { value: value, onChange: handleChange, onSubmit: handleSubmit, placeholder: "Type a prompt... (/story to update story)" })] }));
 }
 //# sourceMappingURL=PromptInput.js.map

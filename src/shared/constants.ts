@@ -14,6 +14,8 @@ export const ErrorCode = {
     HOST_DISCONNECTED: "HOST_DISCONNECTED",
     REPO_INVALID: "REPO_INVALID",
     REPO_MISMATCH: "REPO_MISMATCH",
+    STORY_INVALID: "STORY_INVALID",
+    STORY_FAILED: "STORY_FAILED",
 } as const;
 
 export type ErrorCodeValue = (typeof ErrorCode)[keyof typeof ErrorCode];

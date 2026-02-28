@@ -12,6 +12,7 @@ import ActivityFeed from "./ActivityFeed.js";
 import PromptInput from "./PromptInput.js";
 import ReviewPanel from "./ReviewPanel.js";
 import ExecutionView from "./ExecutionView.js";
+import StoryView from "./StoryView.js";
 const initialState = {
     myUsername: "",
     members: [],
@@ -28,6 +29,9 @@ const initialState = {
     executionBackendAvailable: true,
     errorMessage: null,
     partyEnded: false,
+    storyContent: "",
+    storyStreaming: false,
+    storyError: null,
 };
 function addOutput(outputs, promptId, status, message) {
     return [
@@ -82,6 +86,14 @@ function reducer(state, action) {
             };
         case "LOCAL_PROMPT_SUBMITTED":
             return { ...state, currentPromptId: action.promptId, viewingMember: null };
+        case "LOCAL_STORY_SUBMITTED":
+            return {
+                ...state,
+                storyContent: "",
+                storyStreaming: true,
+                storyError: null,
+                viewingMember: null,
+            };
         case "PROMPT_QUEUED":
             return {
                 ...state,
@@ -181,6 +193,17 @@ function reducer(state, action) {
                 ...state,
                 executionBackendAvailable: action.executionBackendAvailable,
             };
+        case "STORY_CHUNK":
+            return {
+                ...state,
+                storyContent: state.storyContent + action.content,
+                storyStreaming: true,
+                storyError: null,
+            };
+        case "STORY_COMPLETE":
+            return { ...state, storyStreaming: false, storyError: null };
+        case "STORY_FAILED":
+            return { ...state, storyStreaming: false };
         case "ACTIVITY":
             return {
                 ...state,
@@ -195,6 +218,15 @@ function reducer(state, action) {
                 || action.code === "REPO_INVALID"
                 || action.code === "REPO_MISMATCH") {
                 return { ...state, partyEnded: true, errorMessage: action.message };
+            }
+            if (action.code === "STORY_FAILED"
+                || action.code === "STORY_INVALID") {
+                return {
+                    ...state,
+                    errorMessage: action.message,
+                    storyError: action.message,
+                    storyStreaming: false,
+                };
             }
             return { ...state, errorMessage: action.message };
         case "SET_VIEWING":
@@ -330,6 +362,12 @@ export default function App({ connection, session }) {
                         executionBackendAvailable: msg.payload.executionBackendAvailable,
                     });
                     break;
+                case "StoryChunk":
+                    dispatch({ type: "STORY_CHUNK", content: msg.content });
+                    break;
+                case "StoryComplete":
+                    dispatch({ type: "STORY_COMPLETE" });
+                    break;
                 case "activity":
                     dispatch({
                         type: "ACTIVITY",
@@ -340,6 +378,10 @@ export default function App({ connection, session }) {
                     break;
                 case "error":
                     dispatch({ type: "ERROR", message: msg.payload.message, code: msg.payload.code });
+                    if (msg.payload.code === "STORY_FAILED"
+                        || msg.payload.code === "STORY_INVALID") {
+                        dispatch({ type: "STORY_FAILED" });
+                    }
                     break;
             }
         };
@@ -353,6 +395,20 @@ export default function App({ connection, session }) {
             return;
         if (state.currentPromptId)
             return;
+        if (content.startsWith("/story")) {
+            const storyContent = content.replace(/^\/story\s*/i, "");
+            if (!storyContent) {
+                dispatch({
+                    type: "ERROR",
+                    message: "Story prompt cannot be empty.",
+                    code: "STORY_INVALID",
+                });
+                return;
+            }
+            dispatch({ type: "LOCAL_STORY_SUBMITTED" });
+            session.submitStoryPrompt(promptId, storyContent);
+            return;
+        }
         dispatch({ type: "LOCAL_PROMPT_SUBMITTED", promptId });
         session.submitPrompt(promptId, content);
     }, [session, state.currentPromptId]);
@@ -398,6 +454,11 @@ export default function App({ connection, session }) {
         // Show completed execution
         if (state.execution?.completed) {
             return _jsx(ExecutionView, { execution: state.execution });
+        }
+        // Show live story stream
+        if ((state.storyStreaming || state.storyContent)
+            && state.currentPromptId === null) {
+            return (_jsx(StoryView, { content: state.storyContent, streaming: state.storyStreaming, error: state.storyError }));
         }
         // Default: OutputView
         return (_jsx(OutputView, { outputs: state.outputs, currentPromptId: state.currentPromptId }));

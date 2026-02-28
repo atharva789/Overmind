@@ -1,3 +1,8 @@
+// Purpose: Capture prompt input and emit submit/typing events.
+// Behavior: Tracks idle/typing state and emits prompt submissions.
+// Assumptions: Parent components handle prompt routing and validation.
+// Invariants: Input state is local and cleared after submit.
+
 import React, { useState, useRef, useCallback, useEffect } from "react";
 import { Box, Text } from "ink";
 import TextInput from "ink-text-input";
@@ -89,7 +94,7 @@ export default function PromptInput({
                 value={value}
                 onChange={handleChange}
                 onSubmit={handleSubmit}
-                placeholder="Type a prompt..."
+                placeholder="Type a prompt... (/story to update story)"
             />
         </Box>
     );

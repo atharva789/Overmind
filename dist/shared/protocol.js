@@ -27,6 +27,13 @@ const PromptSubmitMessage = z.object({
         scope: z.array(z.string()).optional(),
     }),
 });
+const PromptForStoryMessage = z.object({
+    type: z.literal("PromptForStory"),
+    payload: z.object({
+        promptId: z.string(),
+        content: z.string(),
+    }),
+});
 const HostVerdictMessage = z.object({
     type: z.literal("host-verdict"),
     payload: z.object({
@@ -44,6 +51,7 @@ const StatusUpdateMessage = z.object({
 export const ClientMessageSchema = z.discriminatedUnion("type", [
     JoinMessage,
     PromptSubmitMessage,
+    PromptForStoryMessage,
     HostVerdictMessage,
     StatusUpdateMessage,
 ]);
@@ -94,6 +102,17 @@ const HostReviewRequestMessage = z.object({
         promptId: z.string(),
         username: z.string(),
         content: z.string(),
+    }),
+});
+const StoryChunkMessage = z.object({
+    type: z.literal("StoryChunk"),
+    content: z.string(),
+});
+const StoryCompleteMessage = z.object({
+    type: z.literal("StoryComplete"),
+    payload: z.object({
+        promptId: z.string(),
+        timestamp: z.number(),
     }),
 });
 const ActivityMessage = z.object({
@@ -172,6 +191,8 @@ export const ServerMessageSchema = z.discriminatedUnion("type", [
     PromptApprovedMessage,
     PromptDeniedMessage,
     HostReviewRequestMessage,
+    StoryChunkMessage,
+    StoryCompleteMessage,
     ActivityMessage,
     ErrorMessage,
     MemberStatusMessage,

@@ -20,6 +20,7 @@ import ReviewPanel from "./ReviewPanel.js";
 import type { ReviewRequest } from "./ReviewPanel.js";
 import ExecutionView from "./ExecutionView.js";
 import type { ExecutionState } from "./ExecutionView.js";
+import StoryView from "./StoryView.js";
 
 // ─── State ───
 
@@ -39,6 +40,9 @@ interface AppState {
     executionBackendAvailable: boolean;
     errorMessage: string | null;
     partyEnded: boolean;
+    storyContent: string;
+    storyStreaming: boolean;
+    storyError: string | null;
 }
 
 const initialState: AppState = {
@@ -57,6 +61,9 @@ const initialState: AppState = {
     executionBackendAvailable: true,
     errorMessage: null,
     partyEnded: false,
+    storyContent: "",
+    storyStreaming: false,
+    storyError: null,
 };
 
 // ─── Actions ───
@@ -81,6 +88,7 @@ type Action =
     | { type: "ACTIVITY"; username: string; event: string; timestamp: number }
     | { type: "ERROR"; message: string; code: string }
     | { type: "LOCAL_PROMPT_SUBMITTED"; promptId: string }
+    | { type: "LOCAL_STORY_SUBMITTED" }
     | { type: "REVIEW_SHIFT" }
     | { type: "EXECUTION_QUEUED"; promptId: string }
     | { type: "EXECUTION_UPDATE"; promptId: string; stage: string }
@@ -88,6 +96,9 @@ type Action =
     | { type: "MEMBER_EXECUTION_UPDATE"; username: string; promptId: string; stage: string }
     | { type: "MEMBER_EXECUTION_COMPLETE"; username: string; promptId: string; files: FileChange[]; summary: string }
     | { type: "SYSTEM_STATUS"; executionBackendAvailable: boolean }
+    | { type: "STORY_CHUNK"; content: string }
+    | { type: "STORY_COMPLETE" }
+    | { type: "STORY_FAILED" }
     | { type: "SET_VIEWING"; username: string | null };
 
 function addOutput(
@@ -158,6 +169,15 @@ function reducer(state: AppState, action: Action): AppState {
 
         case "LOCAL_PROMPT_SUBMITTED":
             return { ...state, currentPromptId: action.promptId, viewingMember: null };
+
+        case "LOCAL_STORY_SUBMITTED":
+            return {
+                ...state,
+                storyContent: "",
+                storyStreaming: true,
+                storyError: null,
+                viewingMember: null,
+            };
 
         case "PROMPT_QUEUED":
             return {
@@ -267,6 +287,20 @@ function reducer(state: AppState, action: Action): AppState {
                 executionBackendAvailable: action.executionBackendAvailable,
             };
 
+        case "STORY_CHUNK":
+            return {
+                ...state,
+                storyContent: state.storyContent + action.content,
+                storyStreaming: true,
+                storyError: null,
+            };
+
+        case "STORY_COMPLETE":
+            return { ...state, storyStreaming: false, storyError: null };
+
+        case "STORY_FAILED":
+            return { ...state, storyStreaming: false };
+
         case "ACTIVITY":
             return {
                 ...state,
@@ -284,6 +318,17 @@ function reducer(state: AppState, action: Action): AppState {
                 || action.code === "REPO_MISMATCH"
             ) {
                 return { ...state, partyEnded: true, errorMessage: action.message };
+            }
+            if (
+                action.code === "STORY_FAILED"
+                || action.code === "STORY_INVALID"
+            ) {
+                return {
+                    ...state,
+                    errorMessage: action.message,
+                    storyError: action.message,
+                    storyStreaming: false,
+                };
             }
             return { ...state, errorMessage: action.message };
 
@@ -436,6 +481,12 @@ export default function App({ connection, session }: AppProps): React.ReactEleme
                         executionBackendAvailable: msg.payload.executionBackendAvailable,
                     });
                     break;
+                case "StoryChunk":
+                    dispatch({ type: "STORY_CHUNK", content: msg.content });
+                    break;
+                case "StoryComplete":
+                    dispatch({ type: "STORY_COMPLETE" });
+                    break;
                 case "activity":
                     dispatch({
                         type: "ACTIVITY",
@@ -446,6 +497,12 @@ export default function App({ connection, session }: AppProps): React.ReactEleme
                     break;
                 case "error":
                     dispatch({ type: "ERROR", message: msg.payload.message, code: msg.payload.code });
+                    if (
+                        msg.payload.code === "STORY_FAILED"
+                        || msg.payload.code === "STORY_INVALID"
+                    ) {
+                        dispatch({ type: "STORY_FAILED" });
+                    }
                     break;
             }
         };
@@ -460,6 +517,21 @@ export default function App({ connection, session }: AppProps): React.ReactEleme
         (promptId: string, content: string) => {
             if (!content.trim()) return;
             if (state.currentPromptId) return;
+
+            if (content.startsWith("/story")) {
+                const storyContent = content.replace(/^\/story\s*/i, "");
+                if (!storyContent) {
+                    dispatch({
+                        type: "ERROR",
+                        message: "Story prompt cannot be empty.",
+                        code: "STORY_INVALID",
+                    });
+                    return;
+                }
+                dispatch({ type: "LOCAL_STORY_SUBMITTED" });
+                session.submitStoryPrompt(promptId, storyContent);
+                return;
+            }
 
             dispatch({ type: "LOCAL_PROMPT_SUBMITTED", promptId });
             session.submitPrompt(promptId, content);
@@ -543,6 +615,20 @@ export default function App({ connection, session }: AppProps): React.ReactEleme
         // Show completed execution
         if (state.execution?.completed) {
             return <ExecutionView execution={state.execution} />;
+        }
+
+        // Show live story stream
+        if (
+            (state.storyStreaming || state.storyContent)
+            && state.currentPromptId === null
+        ) {
+            return (
+                <StoryView
+                    content={state.storyContent}
+                    streaming={state.storyStreaming}
+                    error={state.storyError}
+                />
+            );
         }
 
         // Default: OutputView

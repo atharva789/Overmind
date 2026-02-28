@@ -132,6 +132,14 @@ export class Session {
                     console.log(`[system] ⚠ Execution backend unavailable`);
                 }
                 break;
+            case "StoryChunk":
+                console.log(`[story] ${msg.content}`);
+                break;
+            case "StoryComplete": {
+                const stamp = new Date(msg.payload.timestamp).toLocaleTimeString();
+                console.log(`[story] Complete at ${stamp}`);
+                break;
+            }
         }
     }
     connect() {
@@ -144,6 +152,12 @@ export class Session {
         this.connection.send({
             type: "prompt-submit",
             payload: { promptId, content, scope },
+        });
+    }
+    submitStoryPrompt(promptId, content) {
+        this.connection.send({
+            type: "PromptForStory",
+            payload: { promptId, content },
         });
     }
     sendVerdict(promptId, verdict, reason) {

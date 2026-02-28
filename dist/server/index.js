@@ -2,6 +2,7 @@
 // Behavior: Validates joins, routes messages, and queues execution.
 // Assumptions: Clients send validated messages matching shared protocol.
 // Invariants: Each party has one host and prompt content stays private.
+import path from "node:path";
 import { WebSocketServer, WebSocket } from "ws";
 import { customAlphabet } from "nanoid";
 import { Party } from "./party.js";
@@ -9,6 +10,14 @@ import { parseClientMessage } from "../shared/protocol.js";
 import { DEFAULT_PORT, JOIN_TIMEOUT_MS, CONNECTION_ID_LENGTH, PARTY_CODE_ALPHABET, PARTY_CODE_LENGTH, MAX_MEMBERS_DEFAULT, ErrorCode, } from "../shared/constants.js";
 import { executePromptChanges } from "./execution/agent.js";
 import { validateJoinRepository } from "./repository.js";
+import { createStoryManager } from "./story/manager.js";
+const rootPath = process.cwd();
+const storyPath = path.join(rootPath, "story.md");
+const storyManager = createStoryManager({
+    rootPath,
+    storyPath,
+    log,
+});
 const generateConnectionId = customAlphabet("abcdefghijklmnopqrstuvwxyz0123456789", CONNECTION_ID_LENGTH);
 const generatePartyCode = customAlphabet(PARTY_CODE_ALPHABET, PARTY_CODE_LENGTH);
 // ─── State ───
@@ -228,6 +237,44 @@ export function startServer() {
                         promptId: entry.promptId,
                         username: entry.username,
                         content: entry.content,
+                    },
+                });
+                break;
+            }
+            case "PromptForStory": {
+                const member = party.getMemberByConnectionId(connectionId);
+                if (!member) {
+                    party.sendTo(connectionId, {
+                        type: "error",
+                        payload: {
+                            message: "Member not found for story prompt.",
+                            code: ErrorCode.INVALID_MESSAGE,
+                        },
+                    });
+                    return;
+                }
+                const trimmed = msg.payload.content.trim();
+                if (!trimmed) {
+                    party.sendTo(connectionId, {
+                        type: "error",
+                        payload: {
+                            message: "Story prompt cannot be empty.",
+                            code: ErrorCode.STORY_INVALID,
+                        },
+                    });
+                    return;
+                }
+                storyManager.enqueue({
+                    partyCode: party.code,
+                    connectionId,
+                    username: member.username,
+                    promptId: msg.payload.promptId,
+                    content: trimmed,
+                    sendTo: (targetId, message) => {
+                        party.sendTo(targetId, message);
+                    },
+                    broadcast: (message, excludeId) => {
+                        party.broadcast(message, excludeId);
                     },
                 });
                 break;
