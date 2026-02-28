@@ -1,402 +1,615 @@
-/**
- * Purpose: Root Ink UI component — single source of truth for all
- * app state in the Overmind TUI.
- *
- * High-level behavior: Subscribes to Connection events in a useEffect
- * and maps server messages to typed reducer actions. Renders the full
- * vertical layout: StatusBar → PartyPanel+OutputView → ActivityFeed →
- * PromptInput. Passes only data props and callbacks to children; no
- * business logic lives in child components.
- *
- * Assumptions:
- *  - session.start() is called by the CLI before this component mounts.
- *  - connection is the Connection instance owned by the Session.
- *  - process.stdout.columns reflects the current terminal width.
- *
- * Invariants:
- *  - All reducer actions map 1:1 to server message types.
- *  - No derived state is duplicated in AppState.
- *  - Prompt content from other members is never stored or rendered.
- */
-
-import { useReducer, useEffect, useState } from "react";
-import { Box, useStdout } from "ink";
+import React, { useReducer, useEffect, useCallback } from "react";
+import { Box, Text, useApp, useInput, useStdout } from "ink";
 import type { Connection } from "../connection.js";
 import type { Session } from "../session.js";
-import type { ServerMessage } from "../../shared/protocol.js";
-import { StatusBar } from "./StatusBar.js";
-import { PartyPanel } from "./PartyPanel.js";
+import type { ServerMessage, FileChange } from "../../shared/protocol.js";
+import StatusBar from "./StatusBar.js";
+import PartyPanel from "./PartyPanel.js";
 import type { MemberView } from "./PartyPanel.js";
-import { OutputView } from "./OutputView.js";
-import type { OutputEntry } from "./OutputView.js";
-import { ActivityFeed } from "./ActivityFeed.js";
+import OutputView from "./OutputView.js";
+import type { OutputEntry, OutputStatus } from "./OutputView.js";
+import ActivityFeed from "./ActivityFeed.js";
 import type { ActivityEvent } from "./ActivityFeed.js";
-import { PromptInput } from "./PromptInput.js";
+import PromptInput from "./PromptInput.js";
+import ReviewPanel from "./ReviewPanel.js";
+import type { ReviewRequest } from "./ReviewPanel.js";
+import ExecutionView from "./ExecutionView.js";
+import type { ExecutionState } from "./ExecutionView.js";
 
-// ─── State & Actions ──────────────────────────────────────────────────────────
+// ─── State ───
 
-type ConnectionStatus = "connected" | "reconnecting" | "disconnected";
-
-export interface AppState {
-  members: MemberView[];
-  outputs: OutputEntry[];
-  events: ActivityEvent[];
-  connectionStatus: ConnectionStatus;
-  currentPromptId: string | null;
-  isHost: boolean;
-  partyCode: string;
+interface AppState {
+    myUsername: string;
+    members: MemberView[];
+    outputs: OutputEntry[];
+    events: ActivityEvent[];
+    connectionStatus: "connected" | "reconnecting" | "disconnected";
+    currentPromptId: string | null;
+    isHost: boolean;
+    partyCode: string;
+    reviewQueue: ReviewRequest[];
+    execution: ExecutionState | null;
+    memberExecutions: Record<string, ExecutionState>;
+    viewingMember: string | null;
+    greenlightAvailable: boolean;
+    executionBackendAvailable: boolean;
+    errorMessage: string | null;
+    partyEnded: boolean;
 }
 
-type AppAction =
-  | { type: "JOIN_ACK"; partyCode: string; members: string[]; isHost: boolean }
-  | { type: "MEMBER_JOINED"; username: string }
-  | { type: "MEMBER_LEFT"; username: string }
-  | { type: "MEMBER_STATUS"; username: string; status: string }
-  | { type: "PROMPT_QUEUED"; promptId: string; position: number }
-  | { type: "PROMPT_GREENLIT"; promptId: string; reasoning: string }
-  | { type: "PROMPT_REDLIT"; promptId: string; reasoning: string }
-  | { type: "PROMPT_APPROVED"; promptId: string }
-  | { type: "PROMPT_DENIED"; promptId: string; reason: string }
-  | { type: "ACTIVITY"; username: string; event: string; timestamp: number }
-  | { type: "ERROR"; message: string; code: string }
-  | { type: "CONNECTION_STATUS"; status: ConnectionStatus }
-  | { type: "SET_PROMPT"; promptId: string }
-  | { type: "CLEAR_PROMPT" };
-
-const VALID_STATUSES = new Set([
-  "idle", "typing", "queued", "executing", "reviewing",
-]);
-
-function toMemberStatus(s: string): MemberView["status"] {
-  return VALID_STATUSES.has(s) ? (s as MemberView["status"]) : "idle";
-}
-
-function reducer(state: AppState, action: AppAction): AppState {
-  switch (action.type) {
-    case "JOIN_ACK":
-      return {
-        ...state,
-        partyCode: action.partyCode,
-        isHost: action.isHost,
-        members: action.members.map((username, idx) => ({
-          username,
-          isHost: idx === 0,
-          status: "idle" as const,
-        })),
-      };
-
-    case "MEMBER_JOINED":
-      if (state.members.some((m) => m.username === action.username)) {
-        return state;
-      }
-      return {
-        ...state,
-        members: [
-          ...state.members,
-          { username: action.username, isHost: false, status: "idle" },
-        ],
-      };
-
-    case "MEMBER_LEFT":
-      return {
-        ...state,
-        members: state.members.filter(
-          (m) => m.username !== action.username
-        ),
-      };
-
-    case "MEMBER_STATUS":
-      return {
-        ...state,
-        members: state.members.map((m) =>
-          m.username === action.username
-            ? { ...m, status: toMemberStatus(action.status) }
-            : m
-        ),
-      };
-
-    case "PROMPT_QUEUED":
-      return {
-        ...state,
-        currentPromptId: action.promptId,
-        outputs: [
-          ...state.outputs,
-          {
-            promptId: action.promptId,
-            type: "queued" as const,
-            text: `Queued at position ${action.position}`,
-            timestamp: Date.now(),
-          },
-        ],
-      };
-
-    case "PROMPT_GREENLIT":
-      return {
-        ...state,
-        outputs: [
-          ...state.outputs,
-          {
-            promptId: action.promptId,
-            type: "greenlit" as const,
-            text: action.reasoning,
-            timestamp: Date.now(),
-          },
-        ],
-      };
-
-    case "PROMPT_REDLIT":
-      return {
-        ...state,
-        currentPromptId: null,
-        outputs: [
-          ...state.outputs,
-          {
-            promptId: action.promptId,
-            type: "redlit" as const,
-            text: action.reasoning,
-            timestamp: Date.now(),
-          },
-        ],
-      };
-
-    case "PROMPT_APPROVED":
-      return {
-        ...state,
-        currentPromptId: null,
-        outputs: [
-          ...state.outputs,
-          {
-            promptId: action.promptId,
-            type: "approved" as const,
-            text: "Approved by host",
-            timestamp: Date.now(),
-          },
-        ],
-      };
-
-    case "PROMPT_DENIED":
-      return {
-        ...state,
-        currentPromptId: null,
-        outputs: [
-          ...state.outputs,
-          {
-            promptId: action.promptId,
-            type: "denied" as const,
-            text: action.reason,
-            timestamp: Date.now(),
-          },
-        ],
-      };
-
-    case "ACTIVITY":
-      return {
-        ...state,
-        events: [
-          ...state.events.slice(-4),
-          {
-            username: action.username,
-            event: action.event,
-            timestamp: action.timestamp,
-          },
-        ],
-      };
-
-    case "ERROR":
-      return {
-        ...state,
-        events: [
-          ...state.events.slice(-4),
-          {
-            username: "system",
-            event: `Error [${action.code}]: ${action.message}`,
-            timestamp: Date.now(),
-          },
-        ],
-      };
-
-    case "CONNECTION_STATUS":
-      return { ...state, connectionStatus: action.status };
-
-    case "SET_PROMPT":
-      return { ...state, currentPromptId: action.promptId };
-
-    case "CLEAR_PROMPT":
-      return { ...state, currentPromptId: null };
-
-    default:
-      return state;
-  }
-}
-
-function msgToAction(msg: ServerMessage): AppAction | null {
-  switch (msg.type) {
-    case "join-ack":
-      return {
-        type: "JOIN_ACK",
-        partyCode: msg.payload.partyCode,
-        members: msg.payload.members,
-        isHost: msg.payload.isHost,
-      };
-    case "member-joined":
-      return { type: "MEMBER_JOINED", username: msg.payload.username };
-    case "member-left":
-      return { type: "MEMBER_LEFT", username: msg.payload.username };
-    case "member-status":
-      return {
-        type: "MEMBER_STATUS",
-        username: msg.payload.username,
-        status: msg.payload.status,
-      };
-    case "prompt-queued":
-      return {
-        type: "PROMPT_QUEUED",
-        promptId: msg.payload.promptId,
-        position: msg.payload.position,
-      };
-    case "prompt-greenlit":
-      return {
-        type: "PROMPT_GREENLIT",
-        promptId: msg.payload.promptId,
-        reasoning: msg.payload.reasoning,
-      };
-    case "prompt-redlit":
-      return {
-        type: "PROMPT_REDLIT",
-        promptId: msg.payload.promptId,
-        reasoning: msg.payload.reasoning,
-      };
-    case "prompt-approved":
-      return { type: "PROMPT_APPROVED", promptId: msg.payload.promptId };
-    case "prompt-denied":
-      return {
-        type: "PROMPT_DENIED",
-        promptId: msg.payload.promptId,
-        reason: msg.payload.reason,
-      };
-    case "activity":
-      return {
-        type: "ACTIVITY",
-        username: msg.payload.username,
-        event: msg.payload.event,
-        timestamp: msg.payload.timestamp,
-      };
-    case "error":
-      return {
-        type: "ERROR",
-        message: msg.payload.message,
-        code: msg.payload.code,
-      };
-    case "host-review-request":
-      // Host sees this as an activity — content is not surfaced here.
-      return {
-        type: "ACTIVITY",
-        username: msg.payload.username,
-        event: `review request · prompt ${msg.payload.promptId}`,
-        timestamp: Date.now(),
-      };
-    default:
-      return null;
-  }
-}
-
-// ─── Component ────────────────────────────────────────────────────────────────
-
-interface AppProps {
-  connection: Connection;
-  session: Session;
-}
-
-export function App({ connection, session }: AppProps) {
-  const [state, dispatch] = useReducer(reducer, {
+const initialState: AppState = {
+    myUsername: "",
     members: [],
     outputs: [],
     events: [],
-    connectionStatus: "disconnected" as ConnectionStatus,
+    connectionStatus: "disconnected",
     currentPromptId: null,
     isHost: false,
-    partyCode: session.partyCode,
-  });
+    partyCode: "",
+    reviewQueue: [],
+    execution: null,
+    memberExecutions: {},
+    viewingMember: null,
+    greenlightAvailable: true,
+    executionBackendAvailable: true,
+    errorMessage: null,
+    partyEnded: false,
+};
 
-  const { stdout } = useStdout();
-  const [termWidth, setTermWidth] = useState(stdout.columns ?? 80);
+// ─── Actions ───
 
-  // Update width on terminal resize.
-  useEffect(() => {
-    const onResize = () => setTermWidth(stdout.columns ?? 80);
-    stdout.on("resize", onResize);
-    return () => { stdout.off("resize", onResize); };
-  }, [stdout]);
+type Action =
+    | { type: "CONNECTED" }
+    | { type: "DISCONNECTED" }
+    | { type: "RECONNECTING" }
+    | { type: "JOIN_ACK"; partyCode: string; members: string[]; isHost: boolean; myUsername: string }
+    | { type: "MEMBER_JOINED"; username: string }
+    | { type: "MEMBER_LEFT"; username: string }
+    | { type: "MEMBER_STATUS"; username: string; status: string }
+    | { type: "PROMPT_QUEUED"; promptId: string; position: number }
+    | { type: "PROMPT_GREENLIT"; promptId: string; reasoning: string }
+    | { type: "PROMPT_REDLIT"; promptId: string; reasoning: string; conflicts: string[] }
+    | { type: "PROMPT_APPROVED"; promptId: string }
+    | { type: "PROMPT_DENIED"; promptId: string; reason: string }
+    | { type: "HOST_REVIEW_REQUEST"; promptId: string; username: string; content: string; reasoning: string; conflicts: string[] }
+    | { type: "ACTIVITY"; username: string; event: string; timestamp: number }
+    | { type: "ERROR"; message: string; code: string }
+    | { type: "LOCAL_PROMPT_SUBMITTED"; promptId: string }
+    | { type: "REVIEW_SHIFT" }
+    | { type: "EXECUTION_QUEUED"; promptId: string }
+    | { type: "EXECUTION_UPDATE"; promptId: string; stage: string }
+    | { type: "EXECUTION_COMPLETE"; promptId: string; files: FileChange[]; summary: string }
+    | { type: "MEMBER_EXECUTION_UPDATE"; username: string; promptId: string; stage: string }
+    | { type: "MEMBER_EXECUTION_COMPLETE"; username: string; promptId: string; files: FileChange[]; summary: string }
+    | { type: "SYSTEM_STATUS"; greenlightAvailable: boolean; executionBackendAvailable: boolean }
+    | { type: "SET_VIEWING"; username: string | null };
 
-  // Subscribe to connection events and dispatch reducer actions.
-  useEffect(() => {
-    const onConnected = () =>
-      dispatch({ type: "CONNECTION_STATUS", status: "connected" });
-    const onDisconnected = () =>
-      dispatch({ type: "CONNECTION_STATUS", status: "disconnected" });
-    const onReconnecting = (_attempt: number) =>
-      dispatch({ type: "CONNECTION_STATUS", status: "reconnecting" });
-    const onMessage = (msg: ServerMessage) => {
-      const action = msgToAction(msg);
-      if (action) dispatch(action);
+function addOutput(
+    outputs: OutputEntry[],
+    promptId: string,
+    status: OutputStatus,
+    message: string
+): OutputEntry[] {
+    return [
+        ...outputs,
+        {
+            id: `${promptId}-${status}-${Date.now()}`,
+            promptId,
+            status,
+            message,
+            timestamp: Date.now(),
+        },
+    ];
+}
+
+function reducer(state: AppState, action: Action): AppState {
+    switch (action.type) {
+        case "CONNECTED":
+            return { ...state, connectionStatus: "connected" };
+
+        case "DISCONNECTED":
+            return { ...state, connectionStatus: "disconnected" };
+
+        case "RECONNECTING":
+            return { ...state, connectionStatus: "reconnecting" };
+
+        case "JOIN_ACK":
+            return {
+                ...state,
+                partyCode: action.partyCode,
+                isHost: action.isHost,
+                myUsername: action.myUsername,
+                members: action.members.map((username, i) => ({
+                    username,
+                    isHost: i === 0,
+                    status: "idle",
+                })),
+            };
+
+        case "MEMBER_JOINED":
+            return {
+                ...state,
+                members: [
+                    ...state.members,
+                    { username: action.username, isHost: false, status: "idle" },
+                ],
+            };
+
+        case "MEMBER_LEFT":
+            return {
+                ...state,
+                members: state.members.filter((m) => m.username !== action.username),
+                viewingMember: state.viewingMember === action.username ? null : state.viewingMember,
+            };
+
+        case "MEMBER_STATUS":
+            return {
+                ...state,
+                members: state.members.map((m) =>
+                    m.username === action.username ? { ...m, status: action.status } : m
+                ),
+            };
+
+        case "LOCAL_PROMPT_SUBMITTED":
+            return { ...state, currentPromptId: action.promptId, viewingMember: null };
+
+        case "PROMPT_QUEUED":
+            return {
+                ...state,
+                outputs: addOutput(state.outputs, action.promptId, "queued", `Position: ${action.position}`),
+            };
+
+        case "PROMPT_GREENLIT":
+            return {
+                ...state,
+                outputs: addOutput(state.outputs, action.promptId, "greenlit", action.reasoning),
+            };
+
+        case "PROMPT_REDLIT":
+            return {
+                ...state,
+                outputs: addOutput(
+                    state.outputs,
+                    action.promptId,
+                    "redlit",
+                    `${action.reasoning}`
+                ),
+            };
+
+        case "PROMPT_APPROVED":
+            return {
+                ...state,
+                outputs: addOutput(state.outputs, action.promptId, "approved", "Approved by host"),
+            };
+
+        case "PROMPT_DENIED":
+            return {
+                ...state,
+                outputs: addOutput(state.outputs, action.promptId, "denied", action.reason),
+                currentPromptId: null,
+                execution: null,
+            };
+
+        case "HOST_REVIEW_REQUEST":
+            return {
+                ...state,
+                reviewQueue: [
+                    ...state.reviewQueue,
+                    {
+                        promptId: action.promptId,
+                        username: action.username,
+                        content: action.content,
+                        reasoning: action.reasoning,
+                        conflicts: action.conflicts,
+                    },
+                ],
+            };
+
+        case "REVIEW_SHIFT":
+            return {
+                ...state,
+                reviewQueue: state.reviewQueue.slice(1),
+            };
+
+        case "EXECUTION_QUEUED":
+            return {
+                ...state,
+                execution: {
+                    promptId: action.promptId,
+                    stage: null,
+                    files: [],
+                    summary: null,
+                    completed: false,
+                },
+            };
+
+        case "EXECUTION_UPDATE":
+            if (state.execution?.promptId !== action.promptId) return state;
+            return {
+                ...state,
+                execution: { ...state.execution, stage: action.stage },
+            };
+
+        case "EXECUTION_COMPLETE":
+            if (state.execution?.promptId !== action.promptId) return state;
+            return {
+                ...state,
+                execution: {
+                    ...state.execution,
+                    files: action.files,
+                    summary: action.summary,
+                    completed: true,
+                    stage: null,
+                },
+                currentPromptId: null,
+            };
+
+        case "MEMBER_EXECUTION_UPDATE":
+            return {
+                ...state,
+                memberExecutions: {
+                    ...state.memberExecutions,
+                    [action.username]: {
+                        promptId: action.promptId,
+                        stage: action.stage,
+                        files: [],
+                        summary: null,
+                        completed: false,
+                    }
+                }
+            };
+
+        case "MEMBER_EXECUTION_COMPLETE":
+            return {
+                ...state,
+                memberExecutions: {
+                    ...state.memberExecutions,
+                    [action.username]: {
+                        promptId: action.promptId,
+                        stage: null,
+                        files: action.files,
+                        summary: action.summary,
+                        completed: true,
+                    }
+                }
+            };
+
+        case "SYSTEM_STATUS":
+            return {
+                ...state,
+                greenlightAvailable: action.greenlightAvailable,
+                executionBackendAvailable: action.executionBackendAvailable,
+            };
+
+        case "ACTIVITY":
+            return {
+                ...state,
+                events: [
+                    ...state.events,
+                    { username: action.username, event: action.event, timestamp: action.timestamp },
+                ],
+            };
+
+        case "ERROR":
+            if (action.code === "HOST_DISCONNECTED" || action.code === "PARTY_ENDED") {
+                return { ...state, partyEnded: true, errorMessage: action.message };
+            }
+            return { ...state, errorMessage: action.message };
+
+        case "SET_VIEWING":
+            return { ...state, viewingMember: action.username };
+
+        default:
+            return state;
+    }
+}
+
+// ─── App ───
+
+interface AppProps {
+    connection: Connection;
+    session: Session;
+}
+
+export default function App({ connection, session }: AppProps): React.ReactElement {
+    const [state, dispatch] = useReducer(reducer, initialState);
+    const { stdout } = useStdout();
+    const height = stdout?.rows ?? 30;
+    const { exit } = useApp();
+
+    // Keyboard handlers
+    useInput(
+        useCallback((input: string, key) => {
+            if (state.partyEnded) {
+                exit();
+                return;
+            }
+
+            // Screen Viewing (Ctrl+1...8)
+            if (key.ctrl && input >= "1" && input <= "8") {
+                const index = parseInt(input, 10) - 1;
+                if (index >= 0 && index < state.members.length) {
+                    const target = state.members[index].username;
+                    if (target === state.myUsername) {
+                        dispatch({ type: "SET_VIEWING", username: null });
+                    } else {
+                        dispatch({ type: "SET_VIEWING", username: target });
+                    }
+                }
+            }
+        }, [state.partyEnded, state.members, state.myUsername, exit]),
+    );
+
+    // Subscribe to connection events
+    useEffect(() => {
+        const onConnected = () => dispatch({ type: "CONNECTED" });
+        const onDisconnected = () => dispatch({ type: "DISCONNECTED" });
+        const onReconnecting = () => dispatch({ type: "RECONNECTING" });
+
+        connection.on("connected", onConnected);
+        connection.on("disconnected", onDisconnected);
+        connection.on("reconnecting", onReconnecting);
+
+        return () => {
+            connection.off("connected", onConnected);
+            connection.off("disconnected", onDisconnected);
+            connection.off("reconnecting", onReconnecting);
+        };
+    }, [connection]);
+
+    // Subscribe to server messages
+    useEffect(() => {
+        const handler = (msg: ServerMessage) => {
+            switch (msg.type) {
+                case "join-ack":
+                    dispatch({
+                        type: "JOIN_ACK",
+                        partyCode: msg.payload.partyCode,
+                        members: msg.payload.members,
+                        isHost: msg.payload.isHost,
+                        myUsername: session.username,
+                    });
+                    break;
+                case "member-joined":
+                    dispatch({ type: "MEMBER_JOINED", username: msg.payload.username });
+                    break;
+                case "member-left":
+                    dispatch({ type: "MEMBER_LEFT", username: msg.payload.username });
+                    break;
+                case "member-status":
+                    dispatch({
+                        type: "MEMBER_STATUS",
+                        username: msg.payload.username,
+                        status: msg.payload.status,
+                    });
+                    break;
+                case "prompt-queued":
+                    dispatch({
+                        type: "PROMPT_QUEUED",
+                        promptId: msg.payload.promptId,
+                        position: msg.payload.position,
+                    });
+                    break;
+                case "prompt-greenlit":
+                    dispatch({
+                        type: "PROMPT_GREENLIT",
+                        promptId: msg.payload.promptId,
+                        reasoning: msg.payload.reasoning,
+                    });
+                    break;
+                case "prompt-redlit":
+                    dispatch({
+                        type: "PROMPT_REDLIT",
+                        promptId: msg.payload.promptId,
+                        reasoning: msg.payload.reasoning,
+                        conflicts: msg.payload.conflicts,
+                    });
+                    break;
+                case "prompt-approved":
+                    dispatch({ type: "PROMPT_APPROVED", promptId: msg.payload.promptId });
+                    break;
+                case "prompt-denied":
+                    dispatch({
+                        type: "PROMPT_DENIED",
+                        promptId: msg.payload.promptId,
+                        reason: msg.payload.reason,
+                    });
+                    break;
+                case "host-review-request":
+                    dispatch({
+                        type: "HOST_REVIEW_REQUEST",
+                        promptId: msg.payload.promptId,
+                        username: msg.payload.username,
+                        content: msg.payload.content,
+                        reasoning: msg.payload.reasoning,
+                        conflicts: msg.payload.conflicts,
+                    });
+                    break;
+                case "execution-queued":
+                    dispatch({ type: "EXECUTION_QUEUED", promptId: msg.payload.promptId });
+                    break;
+                case "execution-update":
+                    dispatch({ type: "EXECUTION_UPDATE", promptId: msg.payload.promptId, stage: msg.payload.stage });
+                    break;
+                case "execution-complete":
+                    dispatch({
+                        type: "EXECUTION_COMPLETE",
+                        promptId: msg.payload.promptId,
+                        files: msg.payload.files,
+                        summary: msg.payload.summary,
+                    });
+                    break;
+                case "member-execution-update":
+                    dispatch({
+                        type: "MEMBER_EXECUTION_UPDATE",
+                        username: msg.payload.username,
+                        promptId: msg.payload.promptId,
+                        stage: msg.payload.stage,
+                    });
+                    break;
+                case "member-execution-complete":
+                    dispatch({
+                        type: "MEMBER_EXECUTION_COMPLETE",
+                        username: msg.payload.username,
+                        promptId: msg.payload.promptId,
+                        files: msg.payload.files,
+                        summary: msg.payload.summary,
+                    });
+                    break;
+                case "system-status":
+                    dispatch({
+                        type: "SYSTEM_STATUS",
+                        greenlightAvailable: msg.payload.greenlightAvailable,
+                        executionBackendAvailable: msg.payload.executionBackendAvailable,
+                    });
+                    break;
+                case "activity":
+                    dispatch({
+                        type: "ACTIVITY",
+                        username: msg.payload.username,
+                        event: msg.payload.event,
+                        timestamp: msg.payload.timestamp,
+                    });
+                    break;
+                case "error":
+                    dispatch({ type: "ERROR", message: msg.payload.message, code: msg.payload.code });
+                    break;
+            }
+        };
+
+        connection.onMessage(handler);
+        return () => {
+            connection.off("message", handler);
+        };
+    }, [connection, session.username]);
+
+    const handlePromptSubmit = useCallback(
+        (promptId: string, content: string) => {
+            if (!content.trim()) return;
+            if (state.currentPromptId) return;
+
+            dispatch({ type: "LOCAL_PROMPT_SUBMITTED", promptId });
+            session.submitPrompt(promptId, content);
+        },
+        [session, state.currentPromptId]
+    );
+
+    const handleTyping = useCallback(() => {
+        session.sendStatusUpdate("typing");
+    }, [session]);
+
+    const handleIdle = useCallback(() => {
+        session.sendStatusUpdate("idle");
+    }, [session]);
+
+    const handleApprove = useCallback(
+        (promptId: string) => {
+            connection.send({
+                type: "host-verdict",
+                payload: { promptId, verdict: "approve" },
+            });
+            dispatch({ type: "REVIEW_SHIFT" });
+        },
+        [connection]
+    );
+
+    const handleDeny = useCallback(
+        (promptId: string, reason: string) => {
+            connection.send({
+                type: "host-verdict",
+                payload: { promptId, verdict: "deny", reason },
+            });
+            dispatch({ type: "REVIEW_SHIFT" });
+        },
+        [connection]
+    );
+
+    const currentReview = state.reviewQueue[0] ?? null;
+    let inputDisabled = state.currentPromptId !== null || currentReview !== null || state.partyEnded;
+    if (state.viewingMember) inputDisabled = true;
+
+    // ─── Party ended overlay ───
+    if (state.partyEnded) {
+        return (
+            <Box flexDirection="column" height={height} justifyContent="center" alignItems="center">
+                <Text bold color="red">{state.errorMessage ?? "Party ended."}</Text>
+                <Text dimColor>Press any key to exit.</Text>
+            </Box>
+        );
+    }
+
+    // ─── Render main content area ───
+    const renderMainContent = () => {
+        // Viewing someone else's screen
+        if (state.viewingMember) {
+            const exec = state.memberExecutions[state.viewingMember];
+
+            return (
+                <Box flexDirection="column" flexGrow={1} borderStyle="single" borderColor="magenta">
+                    <Box paddingX={1} borderBottom={true} borderColor="magenta">
+                        <Text bold color="magenta">👀 Viewing {state.viewingMember}'s Screen (Ctrl+your index to exit)</Text>
+                    </Box>
+                    <Box flexDirection="column" flexGrow={1}>
+                        {exec ? (
+                            <ExecutionView execution={exec} />
+                        ) : (
+                            <Box flexDirection="column" flexGrow={1} justifyContent="center" alignItems="center">
+                                <Text dimColor>{state.viewingMember} is not currently executing a prompt.</Text>
+                            </Box>
+                        )}
+                    </Box>
+                </Box>
+            );
+        }
+
+        // Show ExecutionView for submitter during execution
+        if (state.execution && !state.execution.completed) {
+            return <ExecutionView execution={state.execution} />;
+        }
+
+        // Show completed execution
+        if (state.execution?.completed) {
+            return <ExecutionView execution={state.execution} />;
+        }
+
+        // Default: OutputView
+        return (
+            <OutputView
+                outputs={state.outputs}
+                currentPromptId={state.currentPromptId}
+            />
+        );
     };
 
-    connection
-      .on("connected", onConnected)
-      .on("disconnected", onDisconnected)
-      .on("reconnecting", onReconnecting)
-      .on("message", onMessage);
+    return (
+        <Box flexDirection="column" height={height}>
+            <StatusBar
+                partyCode={state.partyCode}
+                memberCount={state.members.length}
+                connectionStatus={state.connectionStatus}
+                greenlightAvailable={state.greenlightAvailable}
+                executionBackendAvailable={state.executionBackendAvailable}
+            />
+            <Box flexDirection="row" flexGrow={1}>
+                <PartyPanel members={state.members} />
+                {renderMainContent()}
+            </Box>
 
-    return () => {
-      connection
-        .off("connected", onConnected)
-        .off("disconnected", onDisconnected)
-        .off("reconnecting", onReconnecting)
-        .off("message", onMessage);
-    };
-  }, [connection]);
+            {currentReview && state.isHost && !state.viewingMember && (
+                <ReviewPanel
+                    request={currentReview}
+                    onApprove={handleApprove}
+                    onDeny={handleDeny}
+                />
+            )}
 
-  const panelWidth = termWidth < 60 ? 16 : 20;
-  const outputWidth = termWidth - panelWidth - 2;
-
-  function handleSubmit(content: string, promptId: string): void {
-    connection.send({
-      type: "prompt-submit",
-      payload: { promptId, content },
-    });
-    dispatch({ type: "SET_PROMPT", promptId });
-  }
-
-  function handleStatusChange(status: "typing" | "idle"): void {
-    connection.send({
-      type: "status-update",
-      payload: { status },
-    });
-  }
-
-  return (
-    <Box flexDirection="column" width={termWidth}>
-      <StatusBar
-        partyCode={state.partyCode}
-        memberCount={state.members.length}
-        connectionStatus={state.connectionStatus}
-        width={termWidth}
-      />
-      <Box flexDirection="row">
-        <PartyPanel members={state.members} width={panelWidth} />
-        <OutputView
-          outputs={state.outputs}
-          currentPromptId={state.currentPromptId}
-          width={outputWidth}
-        />
-      </Box>
-      <ActivityFeed events={state.events} width={termWidth} />
-      <PromptInput
-        disabled={state.currentPromptId !== null}
-        onSubmit={handleSubmit}
-        onStatusChange={handleStatusChange}
-        width={termWidth}
-      />
-    </Box>
-  );
+            <ActivityFeed events={state.events} />
+            <PromptInput
+                disabled={inputDisabled}
+                onSubmit={handlePromptSubmit}
+                onTyping={handleTyping}
+                onIdle={handleIdle}
+            />
+        </Box>
+    );
 }

@@ -1,30 +1,27 @@
-/**
- * Purpose: Animated spinner component for in-progress state feedback.
- *
- * High-level behavior: Cycles through Braille dot frames at ~80 ms per
- * frame using a setInterval. Renders as a single cyan character.
- *
- * Assumptions:
- *  - Component is mounted only when a spinner should be visible.
- *
- * Invariants:
- *  - Interval is always cleared on unmount to prevent memory leaks.
- */
-
-import { useState, useEffect } from "react";
+import React, { useState, useEffect } from "react";
 import { Text } from "ink";
 
 const FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
-export function Spinner() {
-  const [frame, setFrame] = useState(0);
+interface SpinnerProps {
+    color?: string;
+    label?: string;
+}
 
-  useEffect(() => {
-    const timer = setInterval(() => {
-      setFrame((f) => (f + 1) % FRAMES.length);
-    }, 80);
-    return () => clearInterval(timer);
-  }, []);
+export default function Spinner({ color = "cyan", label }: SpinnerProps): React.ReactElement {
+    const [frame, setFrame] = useState(0);
 
-  return <Text color="cyan">{FRAMES[frame]}</Text>;
+    useEffect(() => {
+        const timer = setInterval(() => {
+            setFrame((prev) => (prev + 1) % FRAMES.length);
+        }, 80);
+        return () => clearInterval(timer);
+    }, []);
+
+    return (
+        <Text>
+            <Text color={color}>{FRAMES[frame]}</Text>
+            {label ? <Text> {label}</Text> : null}
+        </Text>
+    );
 }

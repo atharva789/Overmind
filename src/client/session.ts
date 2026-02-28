@@ -1,180 +1,188 @@
-/**
- * Purpose: High-level client session — wraps Connection with join
- * flow and optional headless console logging.
- *
- * High-level behavior: On connect, immediately sends a `join` message.
- * In headless mode (silent: false, default), logs all server messages
- * to the console using chalk and auto-stops on fatal errors. In silent
- * mode (silent: true), only the join flow runs; the Ink UI layer
- * subscribes to events directly via the exposed `connection` property.
- *
- * Assumptions:
- *  - start() is called exactly once per Session instance.
- *  - In silent mode, all display is handled by the Ink UI layer.
- *
- * Invariants:
- *  - Join message is always sent on connect and reconnect.
- *  - In headless mode, PARTY_ENDED / PARTY_NOT_FOUND stop the session.
- */
-
-import chalk from "chalk";
 import { Connection } from "./connection.js";
-import type { ServerMessage, ClientMessage } from "../shared/protocol.js";
+import type { ServerMessage } from "../shared/protocol.js";
+import { DEFAULT_PORT } from "../shared/constants.js";
 
 export interface SessionOptions {
-  serverUrl: string;
-  username: string;
-  partyCode: string;
-  /** When true, suppress console logging (Ink UI handles display). */
-  silent?: boolean;
+    host?: string;
+    port?: number;
+    partyCode: string;
+    username: string;
+    /** If true, skip console.log handlers (UI mode handles display) */
+    silent?: boolean;
 }
 
 export class Session {
-  private readonly conn: Connection;
-  readonly username: string;
-  readonly partyCode: string;
+    readonly connection: Connection;
+    private partyCode: string;
+    public readonly username: string;
+    private silent: boolean;
 
-  constructor(opts: SessionOptions) {
-    this.username = opts.username;
-    this.partyCode = opts.partyCode;
-    this.conn = new Connection(opts.serverUrl);
+    constructor(options: SessionOptions) {
+        const host = options.host ?? "localhost";
+        const port = options.port ?? DEFAULT_PORT;
+        this.partyCode = options.partyCode;
+        this.username = options.username;
+        this.silent = options.silent ?? false;
 
-    // Always send join immediately on (re)connect.
-    this.conn.on("connected", () => {
-      const joinMsg: ClientMessage = {
-        type: "join",
-        payload: {
-          partyCode: opts.partyCode,
-          username: opts.username,
-        },
-      };
-      this.conn.send(joinMsg);
-    });
+        this.connection = new Connection({
+            url: `ws://${host}:${port}`,
+        });
 
-    if (!opts.silent) {
-      this._attachHeadlessLogging(opts.partyCode);
+        this.setupHandlers();
     }
-  }
 
-  /** Exposes the underlying Connection for UI layer subscriptions. */
-  get connection(): Connection {
-    return this.conn;
-  }
+    private setupHandlers(): void {
+        this.connection.on("connected", () => {
+            if (!this.silent) console.log("[session] Connected to server");
 
-  start(): void {
-    this.conn.connect();
-  }
+            // Send join message
+            this.connection.send({
+                type: "join",
+                payload: {
+                    partyCode: this.partyCode,
+                    username: this.username,
+                },
+            });
+        });
 
-  stop(): void {
-    this.conn.disconnect();
-  }
+        this.connection.on("disconnected", () => {
+            if (!this.silent) console.log("[session] Disconnected");
+        });
 
-  sendRaw(msg: ClientMessage): void {
-    this.conn.send(msg);
-  }
+        this.connection.on("reconnecting", (delay: number) => {
+            if (!this.silent) console.log(`[session] Reconnecting in ${delay}ms...`);
+        });
 
-  private _attachHeadlessLogging(partyCode: string): void {
-    const tag = chalk.cyan("[session]");
+        this.connection.onMessage((msg: ServerMessage) => {
+            this.handleServerMessage(msg);
+        });
+    }
 
-    this.conn
-      .on("disconnected", () => {
-        console.log(tag, chalk.dim(`Disconnected from party ${partyCode}`));
-      })
-      .on("reconnecting", (attempt) => {
-        console.log(tag, chalk.yellow(`Reconnecting (attempt ${attempt})...`));
-      })
-      .on("message", (msg: ServerMessage) => {
-        this._handleMessage(msg);
-      });
-  }
-
-  private _handleMessage(msg: ServerMessage): void {
-    const tag = chalk.cyan("[session]");
-
-    switch (msg.type) {
-      case "join-ack":
-        console.log(
-          tag,
-          chalk.green("Joined party"),
-          chalk.bold(msg.payload.partyCode),
-          "|",
-          msg.payload.members.join(", "),
-          "|",
-          msg.payload.isHost ? chalk.magenta("host") : "member"
-        );
-        break;
-      case "member-joined":
-        console.log(tag, chalk.green(msg.payload.username), "joined");
-        break;
-      case "member-left":
-        console.log(tag, chalk.yellow(msg.payload.username), "left");
-        break;
-      case "member-status":
-        break; // headless mode: status updates are not logged
-      case "activity":
-        console.log(
-          tag,
-          chalk.dim(`${msg.payload.username}: ${msg.payload.event}`)
-        );
-        break;
-      case "prompt-queued":
-        console.log(
-          tag,
-          `Prompt ${msg.payload.promptId}`,
-          `queued at position ${msg.payload.position}`
-        );
-        break;
-      case "prompt-greenlit":
-        console.log(
-          tag,
-          chalk.green(`Prompt ${msg.payload.promptId} greenlit:`),
-          msg.payload.reasoning
-        );
-        break;
-      case "prompt-redlit":
-        console.log(
-          tag,
-          chalk.red(`Prompt ${msg.payload.promptId} redlit:`),
-          msg.payload.reasoning
-        );
-        break;
-      case "host-review-request":
-        console.log(
-          tag,
-          chalk.magenta("[HOST]"),
-          `Review request from ${msg.payload.username}`,
-          `(prompt: ${msg.payload.promptId})`
-        );
-        break;
-      case "prompt-approved":
-        console.log(
-          tag,
-          chalk.green(`Prompt ${msg.payload.promptId} approved`)
-        );
-        break;
-      case "prompt-denied":
-        console.log(
-          tag,
-          chalk.red(`Prompt ${msg.payload.promptId} denied:`),
-          msg.payload.reason
-        );
-        break;
-      case "error":
-        console.error(
-          tag,
-          chalk.red(`Error [${msg.payload.code}]:`),
-          msg.payload.message
-        );
-        if (
-          msg.payload.code === "PARTY_ENDED" ||
-          msg.payload.code === "PARTY_NOT_FOUND" ||
-          msg.payload.code === "JOIN_TIMEOUT"
-        ) {
-          this.stop();
+    private handleServerMessage(msg: ServerMessage): void {
+        if (this.silent) {
+            // In UI mode, only handle terminal error logic
+            if (msg.type === "error") {
+                const terminalCodes = ["PARTY_ENDED", "PARTY_NOT_FOUND", "JOIN_TIMEOUT", "HOST_DISCONNECTED", "PARTY_FULL"];
+                if (terminalCodes.includes(msg.payload.code)) {
+                    this.connection.stopReconnecting();
+                }
+            }
+            return;
         }
-        break;
-      default:
-        break;
+
+        // Console fallback (Phase 1 behavior)
+        switch (msg.type) {
+            case "join-ack":
+                console.log(`[party] Joined ${msg.payload.partyCode}`);
+                console.log(`[party] Members: ${msg.payload.members.join(", ")}`);
+                console.log(`[party] Is host: ${msg.payload.isHost}`);
+                break;
+
+            case "member-joined":
+                console.log(`[party] ${msg.payload.username} joined`);
+                break;
+
+            case "member-left":
+                console.log(`[party] ${msg.payload.username} left`);
+                break;
+
+            case "member-status":
+                console.log(`[status] ${msg.payload.username}: ${msg.payload.status}`);
+                break;
+
+            case "prompt-queued":
+                console.log(`[prompt] Queued at position ${msg.payload.position}`);
+                break;
+
+            case "prompt-greenlit":
+                console.log(`[prompt] Greenlit: ${msg.payload.reasoning}`);
+                break;
+
+            case "prompt-redlit":
+                console.log(`[prompt] Redlit: ${msg.payload.reasoning}`);
+                break;
+
+            case "prompt-approved":
+                console.log(`[prompt] Approved: ${msg.payload.promptId}`);
+                break;
+
+            case "prompt-denied":
+                console.log(`[prompt] Denied: ${msg.payload.reason}`);
+                break;
+
+            case "host-review-request":
+                console.log(`[host] Review request from ${msg.payload.username}`);
+                console.log(`[host] Content: ${msg.payload.content}`);
+                break;
+
+            case "activity":
+                console.log(
+                    `[activity] ${msg.payload.username}: ${msg.payload.event}`
+                );
+                break;
+
+            case "error": {
+                console.error(`[error] ${msg.payload.code}: ${msg.payload.message}`);
+                const terminalCodes = ["PARTY_ENDED", "PARTY_NOT_FOUND", "JOIN_TIMEOUT", "HOST_DISCONNECTED", "PARTY_FULL"];
+                if (terminalCodes.includes(msg.payload.code)) {
+                    this.connection.stopReconnecting();
+                }
+                break;
+            }
+
+            case "execution-queued":
+                console.log(`[exec] Queued: ${msg.payload.reason}`);
+                break;
+
+            case "execution-update":
+                console.log(`[exec] Stage: ${msg.payload.stage}`);
+                break;
+
+            case "execution-complete":
+                console.log(`[exec] Complete: ${msg.payload.summary}`);
+                for (const f of msg.payload.files) {
+                    console.log(`[exec]   ${f.path} (+${f.linesAdded}/-${f.linesRemoved})`);
+                }
+                break;
+
+            case "system-status":
+                if (!msg.payload.greenlightAvailable) {
+                    console.log(`[system] ⚠ Greenlight agent unavailable`);
+                }
+                break;
+        }
     }
-  }
+
+    connect(): void {
+        this.connection.connect();
+    }
+
+    disconnect(): void {
+        this.connection.disconnect();
+    }
+
+    submitPrompt(promptId: string, content: string, scope?: string[]): void {
+        this.connection.send({
+            type: "prompt-submit",
+            payload: { promptId, content, scope },
+        });
+    }
+
+    sendVerdict(
+        promptId: string,
+        verdict: "approve" | "deny",
+        reason?: string
+    ): void {
+        this.connection.send({
+            type: "host-verdict",
+            payload: { promptId, verdict, reason },
+        });
+    }
+
+    sendStatusUpdate(status: "typing" | "idle"): void {
+        this.connection.send({
+            type: "status-update",
+            payload: { status },
+        });
+    }
 }

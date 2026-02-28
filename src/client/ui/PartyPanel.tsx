@@ -1,83 +1,54 @@
-/**
- * Purpose: Fixed-width panel listing all party members and their status.
- *
- * High-level behavior: Renders a vertical list of members. Host is
- * prefixed with ★. Each member shows their username (truncated to fit)
- * and their current status on a second line, colored by status type.
- * Width is constrained to at least 16 columns.
- *
- * Assumptions:
- *  - members list reflects authoritative AppState; no local mutation.
- *
- * Invariants:
- *  - Prompt content is never displayed here.
- *  - Exactly one member in the list has isHost: true.
- */
-
-import { Box, Text } from "ink";
-import figures from "figures";
-
-export type MemberStatus =
-  | "idle"
-  | "typing"
-  | "queued"
-  | "executing"
-  | "reviewing";
+import React from "react";
+import { Box, Text, useStdout } from "ink";
 
 export interface MemberView {
-  username: string;
-  isHost: boolean;
-  status: MemberStatus;
+    username: string;
+    isHost: boolean;
+    status: string;
 }
 
 interface PartyPanelProps {
-  members: MemberView[];
-  width: number;
+    members: MemberView[];
 }
 
-const STATUS_COLOR: Record<MemberStatus, string> = {
-  idle: "green",
-  typing: "yellow",
-  queued: "blue",
-  executing: "cyan",
-  reviewing: "magenta",
+const STATUS_COLORS: Record<string, string> = {
+    idle: "green",
+    typing: "yellow",
+    queued: "blue",
+    "awaiting greenlight": "blue",
+    "awaiting review": "magenta",
+    executing: "cyan",
 };
 
-function truncate(s: string, max: number): string {
-  return s.length <= max ? s : s.slice(0, max - 1) + "…";
-}
+export default function PartyPanel({ members }: PartyPanelProps): React.ReactElement {
+    const { stdout } = useStdout();
+    const termWidth = stdout?.columns ?? 80;
 
-export function PartyPanel({ members, width }: PartyPanelProps) {
-  const panelWidth = Math.max(width, 16);
-  // Reserve space: 2 chars for prefix (★ or space + space)
-  const nameMax = panelWidth - 4;
+    // Shrink width if terminal is small
+    const panelWidth = termWidth < 60 ? 18 : 24;
 
-  return (
-    <Box
-      flexDirection="column"
-      width={panelWidth}
-      borderStyle="single"
-      borderRight
-      borderLeft={false}
-      borderTop={false}
-      borderBottom={false}
-    >
-      {members.map((m) => {
-        const prefix = m.isHost ? figures.star : " ";
-        const name = truncate(m.username, nameMax);
-        const statusColor = STATUS_COLOR[m.status];
-        return (
-          <Box key={m.username} flexDirection="column" marginBottom={1}>
-            <Text>
-              <Text color={m.isHost ? "magenta" : undefined} bold={m.isHost}>
-                {prefix}{" "}
-              </Text>
-              <Text>{name}</Text>
-            </Text>
-            <Text color={statusColor}>{"  "}{m.status}</Text>
-          </Box>
-        );
-      })}
-    </Box>
-  );
+    return (
+        <Box
+            flexDirection="column"
+            width={panelWidth}
+            borderStyle="single"
+            borderColor="gray"
+            paddingX={1}
+        >
+            <Text bold color="white">Members</Text>
+            {members.map((member, idx) => {
+                const prefix = member.isHost ? "★" : " ";
+                const statusColor = STATUS_COLORS[member.status] ?? "gray";
+
+                return (
+                    <Text key={member.username} wrap="truncate">
+                        <Text color="gray">[{idx + 1}]</Text>
+                        <Text color="yellow">{prefix}</Text>
+                        <Text color={member.isHost ? "yellow" : "white"}>{member.username}</Text>
+                        <Text color={statusColor} dimColor> ({member.status})</Text>
+                    </Text>
+                );
+            })}
+        </Box>
+    );
 }

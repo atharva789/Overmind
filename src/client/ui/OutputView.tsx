@@ -1,28 +1,9 @@
-/**
- * Purpose: Displays prompt lifecycle outputs for the current user's
- * active prompt.
- *
- * High-level behavior: Filters state.outputs to only those belonging
- * to state.currentPromptId and renders the last N entries that fit.
- * When no prompt is active, shows a dim placeholder. Each entry is
- * prefixed with a colored Badge indicating its type.
- *
- * Assumptions:
- *  - outputs contains only entries for the local user's own prompts.
- *  - width is the available horizontal space after PartyPanel.
- *
- * Invariants:
- *  - Prompt content from other members is never rendered here.
- *  - At most MAX_VISIBLE entries are shown to avoid overflow.
- */
+import React from "react";
+import { Box, Text, useStdout } from "ink";
+import Spinner from "./components/Spinner.js";
+import Badge from "./components/Badge.js";
 
-import { Box, Text } from "ink";
-import { Badge } from "./components/Badge.js";
-import { Spinner } from "./components/Spinner.js";
-
-export interface OutputEntry {
-  promptId: string;
-  type:
+export type OutputStatus =
     | "queued"
     | "greenlit"
     | "redlit"
@@ -31,82 +12,75 @@ export interface OutputEntry {
     | "diff"
     | "complete"
     | "error";
-  text: string;
-  timestamp: number;
+
+export interface OutputEntry {
+    id: string;
+    promptId: string;
+    status: OutputStatus;
+    message: string;
+    timestamp: number;
 }
 
 interface OutputViewProps {
-  outputs: OutputEntry[];
-  currentPromptId: string | null;
-  width: number;
+    outputs: OutputEntry[];
+    currentPromptId: string | null;
 }
 
-const MAX_VISIBLE = 12;
-
-const BADGE_COLOR: Record<OutputEntry["type"], string> = {
-  queued: "blue",
-  greenlit: "green",
-  redlit: "red",
-  approved: "green",
-  denied: "red",
-  diff: "cyan",
-  complete: "green",
-  error: "red",
+const STATUS_CONFIG: Record<OutputStatus, { color: string; label: string }> = {
+    queued: { color: "blue", label: "QUEUED" },
+    greenlit: { color: "green", label: "GREENLIT" },
+    redlit: { color: "red", label: "REDLIT" },
+    approved: { color: "green", label: "APPROVED" },
+    denied: { color: "red", label: "DENIED" },
+    diff: { color: "cyan", label: "DIFF" },
+    complete: { color: "green", label: "COMPLETE" },
+    error: { color: "red", label: "ERROR" },
 };
 
-const PENDING_TYPES = new Set<OutputEntry["type"]>(["queued", "greenlit"]);
+const MAX_VISIBLE = 20;
 
-export function OutputView({
-  outputs,
-  currentPromptId,
-  width: _width,
-}: OutputViewProps) {
-  if (!currentPromptId) {
-    if (outputs.length === 0) {
-      return (
-        <Box flexGrow={1} paddingLeft={1}>
-          <Text dimColor>No active prompt — type below to submit.</Text>
-        </Box>
-      );
+export default function OutputView({
+    outputs,
+    currentPromptId,
+}: OutputViewProps): React.ReactElement {
+    const { stdout } = useStdout();
+    const height = stdout?.rows ?? 30;
+
+    // Only show outputs for the current prompt
+    const filtered = currentPromptId
+        ? outputs.filter((o) => o.promptId === currentPromptId)
+        : [];
+
+    // Show last N entries based on available space
+    const maxItems = Math.min(MAX_VISIBLE, Math.max(height - 10, 3));
+    const visible = filtered.slice(-maxItems);
+
+    if (visible.length === 0) {
+        return (
+            <Box flexDirection="column" flexGrow={1} paddingX={1}>
+                <Text dimColor>No active prompt. Type a prompt below to get started.</Text>
+            </Box>
+        );
     }
-    // Show last entry of most recent prompt after it resolves
-    const last = outputs[outputs.length - 1];
-    if (!last) {
-      return <Box flexGrow={1} />;
-    }
+
     return (
-      <Box flexGrow={1} flexDirection="column" paddingLeft={1}>
-        <Text dimColor>Last result:</Text>
-        <Box flexDirection="row" gap={1}>
-          <Badge label={last.type} color={BADGE_COLOR[last.type]} />
-          <Text>{last.text}</Text>
+        <Box flexDirection="column" flexGrow={1} paddingX={1}>
+            {visible.map((entry) => {
+                const config = STATUS_CONFIG[entry.status];
+                const isActive = entry.status === "queued";
+
+                return (
+                    <Box key={entry.id} flexDirection="column" marginBottom={0}>
+                        <Box>
+                            <Badge label={config.label} color={config.color} />
+                            {isActive && <Spinner color="blue" />}
+                        </Box>
+                        <Text color="gray" wrap="truncate">
+                            {"  "}{entry.message}
+                        </Text>
+                    </Box>
+                );
+            })}
         </Box>
-      </Box>
     );
-  }
-
-  const relevant = outputs
-    .filter((o) => o.promptId === currentPromptId)
-    .slice(-MAX_VISIBLE);
-
-  const isStillPending =
-    relevant.length === 0 ||
-    PENDING_TYPES.has(relevant[relevant.length - 1]!.type);
-
-  return (
-    <Box flexGrow={1} flexDirection="column" paddingLeft={1}>
-      {relevant.map((o, i) => (
-        <Box key={i} flexDirection="row" gap={1}>
-          <Badge label={o.type} color={BADGE_COLOR[o.type]} />
-          <Text>{o.text}</Text>
-        </Box>
-      ))}
-      {isStillPending && (
-        <Box flexDirection="row" gap={1}>
-          <Spinner />
-          <Text dimColor>Waiting…</Text>
-        </Box>
-      )}
-    </Box>
-  );
 }

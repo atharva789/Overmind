@@ -1,66 +1,65 @@
-/**
- * Purpose: Single-row status bar showing party info and connection state.
- *
- * High-level behavior: Renders "OVERMIND · Party: XXXX · N members · ●
- * Live/Reconnecting/Offline" on one line followed by a separator. The
- * dot color reflects connection status. Gracefully truncates when the
- * terminal is too narrow.
- *
- * Assumptions:
- *  - props.width reflects the current terminal column count.
- *
- * Invariants:
- *  - Always renders as exactly two lines (content + separator).
- *  - Never logs or leaks prompt content.
- */
-
-import { Box, Text } from "ink";
-import figures from "figures";
+import React from "react";
+import { Box, Text, useStdout } from "ink";
 
 interface StatusBarProps {
-  partyCode: string;
-  memberCount: number;
-  connectionStatus: "connected" | "reconnecting" | "disconnected";
-  width: number;
+    partyCode: string;
+    memberCount: number;
+    connectionStatus: "connected" | "reconnecting" | "disconnected";
+    greenlightAvailable?: boolean;
+    executionBackendAvailable?: boolean;
 }
 
-const DOT_COLOR: Record<StatusBarProps["connectionStatus"], string> = {
-  connected: "green",
-  reconnecting: "yellow",
-  disconnected: "red",
-};
+export default function StatusBar({
+    partyCode,
+    memberCount,
+    connectionStatus,
+    greenlightAvailable = true,
+    executionBackendAvailable = true,
+}: StatusBarProps): React.ReactElement {
+    const { stdout } = useStdout();
+    const width = stdout?.columns ?? 80;
 
-const STATUS_LABEL: Record<StatusBarProps["connectionStatus"], string> = {
-  connected: "Live",
-  reconnecting: "Reconnecting",
-  disconnected: "Offline",
-};
+    const dot = "●";
+    const dotColor =
+        connectionStatus === "connected"
+            ? "green"
+            : connectionStatus === "reconnecting"
+                ? "yellow"
+                : "red";
 
-export function StatusBar({
-  partyCode,
-  memberCount,
-  connectionStatus,
-  width,
-}: StatusBarProps) {
-  const dot = figures.bullet;
-  const dotColor = DOT_COLOR[connectionStatus];
-  const label = STATUS_LABEL[connectionStatus];
-  const codeDisplay = partyCode || "----";
-  const separator = "─".repeat(Math.max(width, 1));
+    const statusLabel =
+        connectionStatus === "connected"
+            ? "Live"
+            : connectionStatus === "reconnecting"
+                ? "Reconnecting"
+                : "Disconnected";
 
-  return (
-    <Box flexDirection="column">
-      <Box flexDirection="row">
-        <Text bold>OVERMIND</Text>
-        <Text> · Party: </Text>
-        <Text bold color="cyan">
-          {codeDisplay}
-        </Text>
-        <Text> · {memberCount} member{memberCount !== 1 ? "s" : ""} · </Text>
-        <Text color={dotColor}>{dot} </Text>
-        <Text color={dotColor}>{label}</Text>
-      </Box>
-      <Text dimColor>{separator}</Text>
-    </Box>
-  );
+    const warnings: string[] = [];
+    if (!greenlightAvailable) warnings.push("⚠ Greenlight unavailable");
+    if (!executionBackendAvailable) warnings.push("⚠ Execution offline");
+
+    const content = `OVERMIND · Party: ${partyCode} · ${memberCount} member${memberCount !== 1 ? "s" : ""} · `;
+
+    const maxLen = Math.max(width - 20, 30);
+    const truncated = content.length > maxLen ? content.slice(0, maxLen) + "…" : content;
+
+    return (
+        <Box
+            width={width}
+            borderStyle="single"
+            borderTop={false}
+            borderLeft={false}
+            borderRight={false}
+            borderBottom={true}
+            borderColor="gray"
+            paddingX={1}
+        >
+            <Text bold color="cyan">{truncated}</Text>
+            <Text color={dotColor}>{dot}</Text>
+            <Text> {statusLabel}</Text>
+            {warnings.length > 0 && (
+                <Text color="yellow"> {warnings.join(" · ")}</Text>
+            )}
+        </Box>
+    );
 }

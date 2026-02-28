@@ -1,23 +1,15 @@
-/**
- * Purpose: Inline colored label badge for prompt and status display.
- *
- * High-level behavior: Renders a bracketed label in the specified Ink
- * color. Used by OutputView to tag each output entry type.
- *
- * Assumptions:
- *  - color is a valid Ink/chalk color string (e.g. "green", "red").
- *
- * Invariants:
- *  - Renders as a single Text node; does not add newlines.
- */
-
+import React from "react";
 import { Text } from "ink";
 
 interface BadgeProps {
-  label: string;
-  color: string;
+    label: string;
+    color: string;
 }
 
-export function Badge({ label, color }: BadgeProps) {
-  return <Text color={color}>[{label}]</Text>;
+export default function Badge({ label, color }: BadgeProps): React.ReactElement {
+    return (
+        <Text color={color} bold>
+            {` ${label.toUpperCase()} `}
+        </Text>
+    );
 }
