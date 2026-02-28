@@ -57,8 +57,8 @@ export function reserveParty(hostUsername: string): string {
 export function startServer(): WebSocketServer {
     const port = Number(process.env["OVERMIND_PORT"]) || DEFAULT_PORT;
 
-    const wss = new WebSocketServer({ port }, () => {
-        log(`Overmind server listening on port ${port}`);
+    const wss = new WebSocketServer({ port, host: "0.0.0.0" }, () => {
+        log(`Overmind server listening on port ${port} (0.0.0.0)`);
     });
 
     wss.on("connection", (ws: WebSocket) => {
