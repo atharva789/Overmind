@@ -1,8 +1,8 @@
 """
-Purpose: Orchestrate Overmind execution requests via a vLLM backend.
-High-level behavior: Validates input, calls the LLM, and returns file edits.
-Assumptions: OVERMIND_LLM_URL points to an OpenAI-compatible vLLM server.
-Invariants: Prompt content is never logged and invalid outputs are rejected.
+Purpose: Orchestrate Overmind execution runs via Modal workers.
+High-level behavior: Creates runs, spawns workers, and serves run status.
+Assumptions: OVERMIND_LLM_URL points to a vLLM OpenAI-compatible API.
+Invariants: Handlers never generate edits; workers produce all file updates.
 """
 
 from __future__ import annotations
@@ -11,19 +11,31 @@ import json
 import os
 import re
 from datetime import datetime, timezone
-from typing import Any, Iterable, Optional
+from typing import Any, Optional
 
 import httpx
 import modal
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, ValidationError
 
 APP_NAME = "overmind-orchestrator"
+RUN_STORE_NAME = "overmind-orchestrator-runs"
 DEFAULT_LLM_URL = "https://mercanmeh123--overmind-llm-serve.modal.run"
 MODEL_ID = os.environ.get("MODEL_ID", "openai/gpt-oss-20b")
 LLM_URL = os.environ.get("OVERMIND_LLM_URL", DEFAULT_LLM_URL).rstrip("/")
 LLM_TIMEOUT_S = int(os.environ.get("OVERMIND_LLM_TIMEOUT_S", "60"))
 LOG_TRUNCATE_CHARS = 200
+LLM_SECRET_NAME = "overmind-llm-auth"
+
+STAGE_SPAWNING = "Spawning sandbox..."
+STAGE_WORKING = "Agent is working..."
+STAGE_EXTRACTING = "Extracting changes..."
+
+STATUS_QUEUED = "queued"
+STATUS_RUNNING = "running"
+STATUS_COMPLETED = "completed"
+STATUS_FAILED = "failed"
+STATUS_CANCELED = "canceled"
 
 image = modal.Image.debian_slim().pip_install(
     "fastapi",
@@ -31,19 +43,21 @@ image = modal.Image.debian_slim().pip_install(
 )
 
 app = modal.App(APP_NAME)
+run_store = modal.Dict.from_name(RUN_STORE_NAME, create_if_missing=True)
 web_app = FastAPI()
 
 
-class FilePayload(BaseModel):
-    path: str
-    content: str
-
-
-class ExecuteRequest(BaseModel):
-    prompt: str
-    files: list[FilePayload]
-    scope: Optional[list[str]] = None
+class RunCreateRequest(BaseModel):
+    runId: str
     promptId: str
+    prompt: str
+    story: str
+    scope: Optional[list[str]] = None
+    files: dict[str, str]
+
+
+class RunCreateResponse(BaseModel):
+    runId: str
 
 
 class FileChange(BaseModel):
@@ -56,59 +70,76 @@ class LlmResponse(BaseModel):
     files: list[FileChange]
 
 
+class RunStatusRecord(BaseModel):
+    status: str
+    stage: Optional[str] = None
+    detail: Optional[str] = None
+    files: Optional[list[FileChange]] = None
+    summary: Optional[str] = None
+    error: Optional[str] = None
+    updatedAt: str
+
+
+def now_iso() -> str:
+    """
+    Build a UTC ISO timestamp string.
+    Does not read external time sources beyond system clock.
+    Edge cases: None.
+    Invariants: Always returns timezone-aware ISO strings.
+    """
+    return datetime.now(timezone.utc).isoformat()
+
+
 def log(message: str) -> None:
     """
     Write a timestamped log message.
     Does not include prompt content.
+    Edge cases: Long messages are truncated.
+    Invariants: Log entries always include UTC timestamps.
     """
-    ts = datetime.now(timezone.utc).isoformat()
+    ts = now_iso()
     truncated = message[:LOG_TRUNCATE_CHARS]
     print(f"[{ts}] {truncated}")
-
-
-def normalize_files(files: Iterable[FilePayload]) -> list[dict[str, str]]:
-    """
-    Normalize and sort file payloads for deterministic ordering.
-    Does not mutate the input list.
-    """
-    normalized = [
-        {"path": file_payload.path, "content": file_payload.content}
-        for file_payload in files
-    ]
-    return sorted(normalized, key=lambda item: item["path"])
 
 
 def build_system_prompt() -> str:
     """
     Build the system prompt for deterministic JSON output.
     Does not depend on runtime state.
+    Edge cases: None.
+    Invariants: Returns a single-line instruction string.
     """
     return (
-        "You are Overmind's execution engine. "
+        "You are Overmind's execution worker. "
         "Return only JSON with keys: summary, files. "
         "Each file entry must include path and content. "
         "Do not include markdown or explanations."
     )
 
 
-def build_user_prompt(req: ExecuteRequest) -> str:
+def build_user_prompt(req: RunCreateRequest) -> str:
     """
-    Build the user prompt with the prompt and file pack.
-    Does not log or mutate request payloads.
+    Build the user prompt with story, scope, and file pack.
+    Does not log prompt content.
+    Edge cases: Missing scope yields an empty array.
+    Invariants: JSON output is sorted for deterministic ordering.
     """
     payload = {
         "prompt": req.prompt,
         "promptId": req.promptId,
+        "story": req.story,
         "scope": req.scope or [],
-        "files": normalize_files(req.files),
+        "files": req.files,
     }
-    return json.dumps(payload, ensure_ascii=False)
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True)
 
 
 def strip_code_fences(text: str) -> str:
     """
     Remove surrounding markdown code fences if present.
     Does not alter inner JSON content.
+    Edge cases: Returns trimmed input when no fences are present.
+    Invariants: Output contains no leading or trailing whitespace.
     """
     trimmed = text.strip()
     if trimmed.startswith("```"):
@@ -121,17 +152,157 @@ def strip_code_fences(text: str) -> str:
 def validate_llm_response(payload: Any) -> LlmResponse:
     """
     Validate the LLM JSON output against the response schema.
-    Raises ValidationError on mismatch.
+    Does not coerce invalid types.
+    Edge cases: Raises ValidationError on mismatch.
+    Invariants: Returned object conforms to LlmResponse.
     """
     if hasattr(LlmResponse, "model_validate"):
         return LlmResponse.model_validate(payload)
     return LlmResponse.parse_obj(payload)
 
 
-async def call_llm(req: ExecuteRequest) -> LlmResponse:
+def read_run_record(run_id: str) -> RunStatusRecord:
+    """
+    Load a run record from the Modal dictionary.
+    Does not create missing records.
+    Edge cases: Raises KeyError if run is missing.
+    Invariants: Returned record is schema-validated.
+    """
+    raw = run_store.get(run_id)
+    if raw is None:
+        raise KeyError(f"run not found: {run_id}")
+    if hasattr(RunStatusRecord, "model_validate"):
+        return RunStatusRecord.model_validate(raw)
+    return RunStatusRecord.parse_obj(raw)
+
+
+def run_record_to_dict(record: RunStatusRecord) -> dict[str, Any]:
+    """
+    Convert a run record to a plain dict.
+    Does not mutate the input record.
+    Edge cases: Supports both Pydantic v1 and v2 APIs.
+    Invariants: Output is JSON-serializable.
+    """
+    if hasattr(record, "model_dump"):
+        return record.model_dump()
+    return record.dict()
+
+
+def write_run_record(run_id: str, record: RunStatusRecord) -> None:
+    """
+    Persist a run record to the Modal dictionary.
+    Does not mutate the input record.
+    Edge cases: Overwrites any existing entry.
+    Invariants: Stored records include updatedAt.
+    """
+    run_store[run_id] = run_record_to_dict(record)
+
+
+def update_run_record(run_id: str, updates: dict[str, Any]) -> None:
+    """
+    Update an existing run record with new fields.
+    Does not create records when missing.
+    Edge cases: Raises KeyError if run is missing.
+    Invariants: updatedAt is always refreshed.
+    """
+    record = read_run_record(run_id)
+    data = run_record_to_dict(record)
+    data.update(updates)
+    data["updatedAt"] = now_iso()
+    write_run_record(run_id, RunStatusRecord(**data))
+
+
+def should_cancel(run_id: str) -> bool:
+    """
+    Determine if a run has been canceled.
+    Does not mutate run state.
+    Edge cases: Missing runs return False.
+    Invariants: Canceled status is treated as terminal.
+    """
+    try:
+        record = read_run_record(run_id)
+    except KeyError:
+        return False
+    return record.status == STATUS_CANCELED
+
+
+def mark_run_running(run_id: str) -> None:
+    """
+    Mark a run as running with the working stage.
+    Does not validate run existence.
+    Edge cases: Missing runs raise KeyError.
+    Invariants: Stage is set to STAGE_WORKING.
+    """
+    update_run_record(
+        run_id,
+        {
+            "status": STATUS_RUNNING,
+            "stage": STAGE_WORKING,
+            "detail": None,
+            "error": None,
+        },
+    )
+
+
+def mark_run_canceled(run_id: str, detail: str) -> None:
+    """
+    Mark a run as canceled with a detail message.
+    Does not terminate running workers.
+    Edge cases: Missing runs raise KeyError.
+    Invariants: Status is set to STATUS_CANCELED.
+    """
+    update_run_record(
+        run_id,
+        {
+            "status": STATUS_CANCELED,
+            "stage": None,
+            "detail": detail,
+        },
+    )
+
+
+def mark_run_failed(run_id: str, stage: str, detail: str, error: str) -> None:
+    """
+    Mark a run as failed with detail and error.
+    Does not retry failed executions.
+    Edge cases: Missing runs raise KeyError.
+    Invariants: Status is set to STATUS_FAILED.
+    """
+    update_run_record(
+        run_id,
+        {
+            "status": STATUS_FAILED,
+            "stage": stage,
+            "detail": detail,
+            "error": error,
+        },
+    )
+
+
+def mark_run_completed(run_id: str, result: LlmResponse) -> None:
+    """
+    Mark a run as completed with extracted files and summary.
+    Does not mutate the LlmResponse object.
+    Edge cases: Missing runs raise KeyError.
+    Invariants: Status is set to STATUS_COMPLETED.
+    """
+    update_run_record(
+        run_id,
+        {
+            "status": STATUS_COMPLETED,
+            "stage": STAGE_EXTRACTING,
+            "files": result.files,
+            "summary": result.summary,
+        },
+    )
+
+
+async def call_llm(req: RunCreateRequest) -> LlmResponse:
     """
     Call the vLLM OpenAI-compatible server and parse the response.
-    Raises on HTTP or schema validation errors.
+    Does not log prompt content.
+    Edge cases: Raises on HTTP or JSON parse failures.
+    Invariants: Returns a validated LlmResponse object.
     """
     headers = {"Content-Type": "application/json"}
     api_key = os.environ.get("OVERMIND_LLM_API_KEY")
@@ -168,16 +339,62 @@ async def call_llm(req: ExecuteRequest) -> LlmResponse:
     return validate_llm_response(parsed)
 
 
+@app.function(
+    image=image,
+    secrets=[modal.Secret.from_name(LLM_SECRET_NAME)],
+)
+async def run_worker(run_id: str, req: RunCreateRequest) -> None:
+    """
+    Execute a run inside a Modal worker function.
+    Does not write to the host filesystem.
+    Edge cases: Cancels early if run is marked canceled.
+    Invariants: Updates run status on all exit paths.
+    """
+    mark_run_running(run_id)
+
+    if should_cancel(run_id):
+        mark_run_canceled(run_id, "Run canceled before execution.")
+        return
+
+    try:
+        result = await call_llm(req)
+    except (ValidationError, json.JSONDecodeError, ValueError) as exc:
+        mark_run_failed(
+            run_id,
+            STAGE_EXTRACTING,
+            "Invalid LLM response.",
+            str(exc),
+        )
+        return
+    except Exception as exc:
+        mark_run_failed(
+            run_id,
+            STAGE_WORKING,
+            "LLM execution failed.",
+            str(exc),
+        )
+        return
+
+    mark_run_completed(run_id, result)
+
+
 @web_app.get("/health")
 async def health() -> dict[str, object]:
     """
     Check LLM connectivity by requesting the model list.
     Does not raise on failure.
+    Edge cases: Returns llm_connected=false on errors.
+    Invariants: Always returns a status payload.
     """
     url = f"{LLM_URL}/v1/models"
+    headers = {"Content-Type": "application/json"}
+    api_key = os.environ.get("OVERMIND_LLM_API_KEY")
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
     try:
         async with httpx.AsyncClient(timeout=5) as client:
-            response = await client.get(url)
+            response = await client.get(url, headers=headers)
             response.raise_for_status()
         return {"status": "ok", "llm_connected": True}
     except Exception as exc:
@@ -185,38 +402,90 @@ async def health() -> dict[str, object]:
         return {"status": "ok", "llm_connected": False}
 
 
-@web_app.post("/execute")
-async def execute(req: ExecuteRequest) -> dict[str, object]:
+@web_app.post("/runs")
+async def create_run(req: RunCreateRequest) -> RunCreateResponse:
     """
-    Execute a prompt by calling the LLM and returning file changes.
-    Returns success=false with error details on failure.
+    Create a run record and spawn a worker.
+    Does not call the LLM in-process.
+    Edge cases: Rejects duplicate run IDs.
+    Invariants: Newly created runs start in queued state.
     """
+    if run_store.get(req.runId) is not None:
+        raise HTTPException(status_code=409, detail="run already exists")
+
     log(
-        "execute promptId="
-        f"{req.promptId} prompt_len={len(req.prompt)} "
+        "create runId="
+        f"{req.runId} prompt_len={len(req.prompt)} "
         f"files={len(req.files)}"
     )
+
+    record = RunStatusRecord(
+        status=STATUS_QUEUED,
+        stage=STAGE_SPAWNING,
+        detail=None,
+        files=None,
+        summary=None,
+        error=None,
+        updatedAt=now_iso(),
+    )
+    write_run_record(req.runId, record)
+
+    run_worker.spawn(req.runId, req)
+    return RunCreateResponse(runId=req.runId)
+
+
+@web_app.get("/runs/{run_id}")
+async def get_run(run_id: str) -> dict[str, object]:
+    """
+    Return the current status of a run.
+    Does not mutate run state.
+    Edge cases: Raises 404 for missing runs.
+    Invariants: Responses are schema-validated.
+    """
     try:
-        result = await call_llm(req)
-    except (ValidationError, json.JSONDecodeError, ValueError) as exc:
-        log(f"invalid llm response: {exc}")
-        return {"success": False, "error": "Invalid LLM response", "files": []}
-    except Exception as exc:
-        log(f"execution failed: {exc}")
-        return {"success": False, "error": "LLM execution failed", "files": []}
-
-    files = [
-        {"path": file_change.path, "content": file_change.content}
-        for file_change in result.files
-    ]
-    return {"success": True, "files": files, "summary": result.summary}
+        record = read_run_record(run_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="run not found")
+    return run_record_to_dict(record)
 
 
-@app.function(image=image)
+@web_app.post("/runs/{run_id}/cancel")
+async def cancel_run(run_id: str) -> dict[str, object]:
+    """
+    Cancel a run by updating its status.
+    Does not terminate running workers.
+    Edge cases: Raises 404 for missing runs.
+    Invariants: Canceled runs remain terminal.
+    """
+    try:
+        record = read_run_record(run_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="run not found")
+
+    if record.status in {STATUS_COMPLETED, STATUS_FAILED}:
+        return {"ok": True}
+
+    update_run_record(
+        run_id,
+        {
+            "status": STATUS_CANCELED,
+            "stage": None,
+            "detail": "Run canceled by client.",
+        },
+    )
+    return {"ok": True}
+
+
+@app.function(
+    image=image,
+    secrets=[modal.Secret.from_name(LLM_SECRET_NAME)],
+)
 @modal.asgi_app()
 def fastapi_app() -> FastAPI:
     """
     Expose the FastAPI application via Modal.
     Does not mutate application state.
+    Edge cases: None.
+    Invariants: Returns the shared web_app instance.
     """
     return web_app

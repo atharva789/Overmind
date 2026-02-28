@@ -1,7 +1,7 @@
 """
 Purpose: Serve a vLLM OpenAI-compatible API on Modal.
 High-level behavior: Launches the vLLM OpenAI server with a fixed model.
-Assumptions: MODEL_ID and OVERMIND_LLM_API_KEY are set in the environment.
+Assumptions: Modal secret overmind-llm-auth provides OVERMIND_LLM_API_KEY.
 Invariants: The server binds to a fixed port and exposes OpenAI endpoints.
 """
 
@@ -15,6 +15,7 @@ import modal
 APP_NAME = "overmind-llm"
 MODEL_ID = os.environ.get("MODEL_ID", "openai/gpt-oss-20b")
 PORT = 8000
+LLM_SECRET_NAME = "overmind-llm-auth"
 
 image = modal.Image.debian_slim().pip_install(
     "vllm",
@@ -44,7 +45,11 @@ def build_command(api_key: str | None) -> list[str]:
     return command
 
 
-@app.function(gpu=modal.gpu.H100(), image=image)
+@app.function(
+    gpu=modal.gpu.H100(),
+    image=image,
+    secrets=[modal.Secret.from_name(LLM_SECRET_NAME)],
+)
 @modal.web_server(port=PORT)
 def serve() -> None:
     """
