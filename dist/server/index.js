@@ -253,11 +253,12 @@ export function startServer() {
      */
     function handleJoin(ws, connectionId, msg, timeout, onJoined) {
         clearTimeout(timeout);
-        const { partyCode, username } = msg.payload;
+        const { partyCode, username, projectRoot } = msg.payload;
+        const basename = (p) => p.split("/").pop() ?? p;
         // Reserved party — first joiner becomes host
         if (pendingParties.has(partyCode)) {
             pendingParties.delete(partyCode);
-            const party = new Party(connectionId, ws, username);
+            const party = new Party(connectionId, ws, username, projectRoot);
             party.code = partyCode;
             parties.set(partyCode, party);
             orchestrators.set(partyCode, new Orchestrator(PROJECT_ROOT, MODAL_BRIDGE_URL));
@@ -297,6 +298,22 @@ export function startServer() {
             });
             ws.close();
             return;
+        }
+        // Check project root matches
+        if (projectRoot && party.projectRoot) {
+            const joinerProject = basename(projectRoot);
+            const hostProject = basename(party.projectRoot);
+            if (joinerProject !== hostProject) {
+                sendRaw(ws, {
+                    type: "error",
+                    payload: {
+                        message: `Project mismatch: you are in "${joinerProject}" but the host is in "${hostProject}". All members must work in the same project.`,
+                        code: ErrorCode.PROJECT_MISMATCH,
+                    },
+                });
+                ws.close();
+                return;
+            }
         }
         const resolvedUsername = party.addMember(ws, username, connectionId);
         log(`${resolvedUsername} joined`, partyCode);

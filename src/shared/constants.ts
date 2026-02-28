@@ -15,6 +15,7 @@ export const ErrorCode = {
     PARTY_FULL: "PARTY_FULL",
     HOST_DISCONNECTED: "HOST_DISCONNECTED",
     EXECUTION_FAILED: "EXECUTION_FAILED",
+    PROJECT_MISMATCH: "PROJECT_MISMATCH",
 } as const;
 
 export type ErrorCodeValue =

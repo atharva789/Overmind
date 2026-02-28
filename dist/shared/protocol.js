@@ -18,6 +18,7 @@ const JoinMessage = z.object({
     payload: z.object({
         partyCode: z.string(),
         username: z.string(),
+        projectRoot: z.string().optional(),
     }),
 });
 const PromptSubmitMessage = z.object({

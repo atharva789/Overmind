@@ -27,24 +27,29 @@ export declare const ClientMessageSchema: z.ZodDiscriminatedUnion<"type", [z.Zod
     payload: z.ZodObject<{
         partyCode: z.ZodString;
         username: z.ZodString;
+        projectRoot: z.ZodOptional<z.ZodString>;
     }, "strip", z.ZodTypeAny, {
         partyCode: string;
         username: string;
+        projectRoot?: string | undefined;
     }, {
         partyCode: string;
         username: string;
+        projectRoot?: string | undefined;
     }>;
 }, "strip", z.ZodTypeAny, {
     type: "join";
     payload: {
         partyCode: string;
         username: string;
+        projectRoot?: string | undefined;
     };
 }, {
     type: "join";
     payload: {
         partyCode: string;
         username: string;
+        projectRoot?: string | undefined;
     };
 }>, z.ZodObject<{
     type: z.ZodLiteral<"prompt-submit">;

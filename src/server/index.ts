@@ -328,12 +328,13 @@ export function startServer(): WebSocketServer {
         onJoined: (party: Party) => void
     ): void {
         clearTimeout(timeout);
-        const { partyCode, username } = msg.payload;
+        const { partyCode, username, projectRoot } = msg.payload;
+        const basename = (p: string) => p.split("/").pop() ?? p;
 
         // Reserved party — first joiner becomes host
         if (pendingParties.has(partyCode)) {
             pendingParties.delete(partyCode);
-            const party = new Party(connectionId, ws, username);
+            const party = new Party(connectionId, ws, username, projectRoot);
             (party as { code: string }).code = partyCode;
             parties.set(partyCode, party);
             orchestrators.set(
@@ -381,6 +382,23 @@ export function startServer(): WebSocketServer {
             });
             ws.close();
             return;
+        }
+
+        // Check project root matches
+        if (projectRoot && party.projectRoot) {
+            const joinerProject = basename(projectRoot);
+            const hostProject = basename(party.projectRoot);
+            if (joinerProject !== hostProject) {
+                sendRaw(ws, {
+                    type: "error",
+                    payload: {
+                        message: `Project mismatch: you are in "${joinerProject}" but the host is in "${hostProject}". All members must work in the same project.`,
+                        code: ErrorCode.PROJECT_MISMATCH,
+                    },
+                });
+                ws.close();
+                return;
+            }
         }
 
         const resolvedUsername = party.addMember(ws, username, connectionId);

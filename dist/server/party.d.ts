@@ -16,11 +16,12 @@ export interface PromptEntry {
 export declare class Party {
     code: string;
     hostId: string;
+    projectRoot: string;
     members: Map<string, Member>;
     promptQueue: PromptEntry[];
     private usernameSet;
     private promptCounter;
-    constructor(connectionId: string, hostWs: WebSocket, hostUsername: string);
+    constructor(connectionId: string, hostWs: WebSocket, hostUsername: string, projectRoot?: string);
     /** Resolve username conflicts: name → name-2 → name-3 ... */
     private resolveUsername;
     addMember(ws: WebSocket, username: string, connectionId: string): string;
