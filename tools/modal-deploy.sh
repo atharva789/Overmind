@@ -48,6 +48,66 @@ extract_url() {
         | tr -d '\r'
 }
 
+# Extract a modal.run URL from modal app list output.
+# Does not fail if the app list is unavailable.
+# Edge cases: Falls back to any modal.run URL if name matches fail.
+# Invariants: Returns a single URL or empty string.
+extract_url_from_app_list() {
+    local app_name="$1"
+    local app_list
+    local python_bin
+
+    if command -v python3 >/dev/null 2>&1; then
+        python_bin="python3"
+    elif command -v python >/dev/null 2>&1; then
+        python_bin="python"
+    else
+        return 1
+    fi
+
+    app_list="$(modal app list --json 2>/dev/null || true)"
+    if [ -z "${app_list}" ]; then
+        return 1
+    fi
+
+    printf "%s" "${app_list}" | "${python_bin}" - "${app_name}" <<'PY'
+import json
+import sys
+
+app_name = sys.argv[1]
+
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    sys.exit(1)
+
+urls = []
+
+def walk(obj):
+    if isinstance(obj, dict):
+        for value in obj.values():
+            walk(value)
+    elif isinstance(obj, list):
+        for value in obj:
+            walk(value)
+    elif isinstance(obj, str):
+        if ".modal.run" in obj:
+            urls.append(obj)
+
+walk(data)
+
+if not urls:
+    sys.exit(1)
+
+for url in reversed(urls):
+    if app_name in url:
+        print(url)
+        sys.exit(0)
+
+print(urls[-1])
+PY
+}
+
 # Deploy a Modal file and capture its web URL.
 # Does not echo full deploy output.
 # Edge cases: Exits if URL cannot be detected.
@@ -55,6 +115,7 @@ extract_url() {
 deploy_and_capture_url() {
     local label="$1"
     local file_path="$2"
+    local app_name="$3"
     local deploy_output
     local url
 
@@ -62,15 +123,13 @@ deploy_and_capture_url() {
     deploy_output="$(modal deploy "${file_path}" 2>&1)"
     url="$(extract_url "${deploy_output}")"
 
-    if [ -z "${url}" ]; then
-        echo "Unable to detect ${label} URL from deploy output." >&2
-        echo "Re-run: modal deploy ${file_path}" >&2
-        exit 1
+    if [ -z "${url}" ] || ! echo "${url}" | grep -q "\\.modal\\.run"; then
+        url="$(extract_url_from_app_list "${app_name}")"
     fi
 
-    if ! echo "${url}" | grep -q "\\.modal\\.run"; then
+    if [ -z "${url}" ] || ! echo "${url}" | grep -q "\\.modal\\.run"; then
         echo "Detected URL does not look like a Modal endpoint." >&2
-        echo "Find the *.modal.run URL from deploy output." >&2
+        echo "Run: modal app list --json and find the *.modal.run URL." >&2
         exit 1
     fi
 
@@ -97,8 +156,10 @@ EOF
 
 require_command "modal"
 
-LLM_URL="$(deploy_and_capture_url "LLM server" "modal/llm_server.py")"
-ORCH_URL="$(deploy_and_capture_url "Orchestrator" "modal/orchestrator.py")"
+LLM_URL="$(deploy_and_capture_url "LLM server" "modal/llm_server.py" \
+    "overmind-llm")"
+ORCH_URL="$(deploy_and_capture_url "Orchestrator" "modal/orchestrator.py" \
+    "overmind-orchestrator")"
 
 write_env_file "${ORCH_URL}" "${LLM_URL}"
 
