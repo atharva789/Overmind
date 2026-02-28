@@ -1,3 +1,22 @@
+/**
+ * Purpose: Defines and validates the full Overmind message protocol.
+ *
+ * High-level behavior: All WebSocket messages are JSON objects of shape
+ * { type, payload }. This file defines Zod schemas for every message
+ * type, exports TypeScript types inferred from them, and provides
+ * parse helpers that never throw and return null on invalid input.
+ *
+ * Assumptions:
+ *  - All incoming WebSocket data is passed as a string (or parsed
+ *    before calling parse helpers).
+ *  - Callers treat null return from parse helpers as invalid/drop.
+ *
+ * Invariants:
+ *  - ClientMessage and ServerMessage are disjoint discriminated unions.
+ *  - parseClientMessage / parseServerMessage never throw.
+ *  - No runtime side effects occur on import.
+ */
+
 import { z } from "zod";
 
 // ─── Client → Server Messages ─────────────────────────────────────────────────
@@ -28,10 +47,18 @@ const HostVerdictSchema = z.object({
   }),
 });
 
+const StatusUpdateSchema = z.object({
+  type: z.literal("status-update"),
+  payload: z.object({
+    status: z.enum(["typing", "idle"]),
+  }),
+});
+
 export const ClientMessageSchema = z.discriminatedUnion("type", [
   JoinSchema,
   PromptSubmitSchema,
   HostVerdictSchema,
+  StatusUpdateSchema,
 ]);
 
 export type ClientMessage = z.infer<typeof ClientMessageSchema>;
@@ -129,10 +156,19 @@ const ErrorSchema = z.object({
   }),
 });
 
+const MemberStatusSchema = z.object({
+  type: z.literal("member-status"),
+  payload: z.object({
+    username: z.string(),
+    status: z.string(),
+  }),
+});
+
 export const ServerMessageSchema = z.discriminatedUnion("type", [
   JoinAckSchema,
   MemberJoinedSchema,
   MemberLeftSchema,
+  MemberStatusSchema,
   PromptQueuedSchema,
   PromptGreenlitSchema,
   PromptRedlitSchema,

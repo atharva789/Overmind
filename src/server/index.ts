@@ -1,8 +1,33 @@
+/**
+ * Purpose: Overmind WebSocket server — connection lifecycle and message
+ * routing for all party members.
+ *
+ * High-level behavior: Starts a WebSocket server on the configured
+ * port. Incoming connections must send a `join` message within 5 s or
+ * they are disconnected. After joining, messages are dispatched to
+ * handleAuthedMessage. The `reserveParty` function allows the CLI host
+ * command to create a party code before any socket connects.
+ *
+ * Assumptions:
+ *  - Only one server instance runs per process.
+ *  - OVERMIND_PORT env var or the port argument sets the listen port.
+ *
+ * Invariants:
+ *  - Prompt content is never broadcast to non-host members.
+ *  - Host disconnect triggers PARTY_ENDED for all members.
+ *  - Every connectionId is nanoid(12) — globally unique.
+ */
+
 import { WebSocketServer, WebSocket } from "ws";
 import { nanoid } from "nanoid";
 import { Party } from "./party.js";
 import { parseClientMessage } from "../shared/protocol.js";
-import { ERROR_CODES, DEFAULT_PORT, JOIN_TIMEOUT_MS } from "../shared/constants.js";
+import {
+  ERROR_CODES,
+  DEFAULT_PORT,
+  JOIN_TIMEOUT_MS,
+  MOCK_GREENLIGHT_DELAY_MS,
+} from "../shared/constants.js";
 import type { ServerMessage } from "../shared/protocol.js";
 
 function log(msg: string, partyCode?: string): void {
@@ -102,6 +127,46 @@ export function startOvermindServer(port: number = DEFAULT_PORT): OvermindServer
         );
       }
       log(`Prompt ${promptId} queued at position ${position}`, partyCode);
+
+      // Phase 2: deterministic mock greenlight after fixed delay.
+      // Checks that the party and prompt still exist at fire time.
+      setTimeout(() => {
+        const p = parties.get(partyCode);
+        if (!p) return;
+        const stillQueued = p.promptQueue.some(
+          (e) => e.promptId === promptId
+        );
+        if (!stillQueued) return;
+        const submitter = p.getMemberByConnectionId(connectionId);
+        const uname = submitter?.username ?? "unknown";
+        p.broadcast({
+          type: "prompt-greenlit",
+          payload: {
+            promptId,
+            reasoning: "Mock: no conflicts detected",
+          },
+        });
+        p.broadcast({
+          type: "activity",
+          payload: {
+            username: uname,
+            event: "prompt-greenlit",
+            timestamp: Date.now(),
+          },
+        });
+        log(`Mock greenlit prompt ${promptId}`, partyCode);
+      }, MOCK_GREENLIGHT_DELAY_MS);
+
+      return;
+    }
+
+    if (msg.type === "status-update") {
+      const member = party.getMemberByConnectionId(connectionId);
+      if (!member) return;
+      party.broadcast({
+        type: "member-status",
+        payload: { username: member.username, status: msg.payload.status },
+      });
       return;
     }
 

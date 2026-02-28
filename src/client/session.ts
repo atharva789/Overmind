@@ -1,3 +1,23 @@
+/**
+ * Purpose: High-level client session — wraps Connection with join
+ * flow and optional headless console logging.
+ *
+ * High-level behavior: On connect, immediately sends a `join` message.
+ * In headless mode (silent: false, default), logs all server messages
+ * to the console using chalk and auto-stops on fatal errors. In silent
+ * mode (silent: true), only the join flow runs; the Ink UI layer
+ * subscribes to events directly via the exposed `connection` property.
+ *
+ * Assumptions:
+ *  - start() is called exactly once per Session instance.
+ *  - In silent mode, all display is handled by the Ink UI layer.
+ *
+ * Invariants:
+ *  - Join message is always sent on connect and reconnect.
+ *  - In headless mode, PARTY_ENDED / PARTY_NOT_FOUND stop the session.
+ */
+
+import chalk from "chalk";
 import { Connection } from "./connection.js";
 import type { ServerMessage, ClientMessage } from "../shared/protocol.js";
 
@@ -5,6 +25,8 @@ export interface SessionOptions {
   serverUrl: string;
   username: string;
   partyCode: string;
+  /** When true, suppress console logging (Ink UI handles display). */
+  silent?: boolean;
 }
 
 export class Session {
@@ -17,24 +39,26 @@ export class Session {
     this.partyCode = opts.partyCode;
     this.conn = new Connection(opts.serverUrl);
 
-    this.conn
-      .on("connected", () => {
-        // Send join immediately on connect/reconnect
-        const joinMsg: ClientMessage = {
-          type: "join",
-          payload: { partyCode: this.partyCode, username: this.username },
-        };
-        this.conn.send(joinMsg);
-      })
-      .on("disconnected", () => {
-        console.log(`[session] Disconnected from party ${this.partyCode}`);
-      })
-      .on("reconnecting", (attempt) => {
-        console.log(`[session] Reconnecting (attempt ${attempt})...`);
-      })
-      .on("message", (msg: ServerMessage) => {
-        this._handleMessage(msg);
-      });
+    // Always send join immediately on (re)connect.
+    this.conn.on("connected", () => {
+      const joinMsg: ClientMessage = {
+        type: "join",
+        payload: {
+          partyCode: opts.partyCode,
+          username: opts.username,
+        },
+      };
+      this.conn.send(joinMsg);
+    });
+
+    if (!opts.silent) {
+      this._attachHeadlessLogging(opts.partyCode);
+    }
+  }
+
+  /** Exposes the underlying Connection for UI layer subscriptions. */
+  get connection(): Connection {
+    return this.conn;
   }
 
   start(): void {
@@ -49,54 +73,98 @@ export class Session {
     this.conn.send(msg);
   }
 
+  private _attachHeadlessLogging(partyCode: string): void {
+    const tag = chalk.cyan("[session]");
+
+    this.conn
+      .on("disconnected", () => {
+        console.log(tag, chalk.dim(`Disconnected from party ${partyCode}`));
+      })
+      .on("reconnecting", (attempt) => {
+        console.log(tag, chalk.yellow(`Reconnecting (attempt ${attempt})...`));
+      })
+      .on("message", (msg: ServerMessage) => {
+        this._handleMessage(msg);
+      });
+  }
+
   private _handleMessage(msg: ServerMessage): void {
+    const tag = chalk.cyan("[session]");
+
     switch (msg.type) {
       case "join-ack":
         console.log(
-          `[session] Joined party ${msg.payload.partyCode} | Members: ${msg.payload.members.join(", ")} | Host: ${msg.payload.isHost}`
+          tag,
+          chalk.green("Joined party"),
+          chalk.bold(msg.payload.partyCode),
+          "|",
+          msg.payload.members.join(", "),
+          "|",
+          msg.payload.isHost ? chalk.magenta("host") : "member"
         );
         break;
       case "member-joined":
-        console.log(`[session] ${msg.payload.username} joined the party`);
+        console.log(tag, chalk.green(msg.payload.username), "joined");
         break;
       case "member-left":
-        console.log(`[session] ${msg.payload.username} left the party`);
+        console.log(tag, chalk.yellow(msg.payload.username), "left");
         break;
+      case "member-status":
+        break; // headless mode: status updates are not logged
       case "activity":
         console.log(
-          `[session] Activity — ${msg.payload.username}: ${msg.payload.event}`
+          tag,
+          chalk.dim(`${msg.payload.username}: ${msg.payload.event}`)
         );
         break;
       case "prompt-queued":
         console.log(
-          `[session] Prompt ${msg.payload.promptId} queued at position ${msg.payload.position}`
-        );
-        break;
-      case "host-review-request":
-        console.log(
-          `[session] [HOST] Review request — ${msg.payload.username} submitted prompt ${msg.payload.promptId}`
-        );
-        break;
-      case "prompt-approved":
-        console.log(`[session] Prompt ${msg.payload.promptId} approved`);
-        break;
-      case "prompt-denied":
-        console.log(
-          `[session] Prompt ${msg.payload.promptId} denied: ${msg.payload.reason}`
+          tag,
+          `Prompt ${msg.payload.promptId}`,
+          `queued at position ${msg.payload.position}`
         );
         break;
       case "prompt-greenlit":
         console.log(
-          `[session] Prompt ${msg.payload.promptId} greenlit: ${msg.payload.reasoning}`
+          tag,
+          chalk.green(`Prompt ${msg.payload.promptId} greenlit:`),
+          msg.payload.reasoning
         );
         break;
       case "prompt-redlit":
         console.log(
-          `[session] Prompt ${msg.payload.promptId} redlit: ${msg.payload.reasoning}`
+          tag,
+          chalk.red(`Prompt ${msg.payload.promptId} redlit:`),
+          msg.payload.reasoning
+        );
+        break;
+      case "host-review-request":
+        console.log(
+          tag,
+          chalk.magenta("[HOST]"),
+          `Review request from ${msg.payload.username}`,
+          `(prompt: ${msg.payload.promptId})`
+        );
+        break;
+      case "prompt-approved":
+        console.log(
+          tag,
+          chalk.green(`Prompt ${msg.payload.promptId} approved`)
+        );
+        break;
+      case "prompt-denied":
+        console.log(
+          tag,
+          chalk.red(`Prompt ${msg.payload.promptId} denied:`),
+          msg.payload.reason
         );
         break;
       case "error":
-        console.error(`[session] Error [${msg.payload.code}]: ${msg.payload.message}`);
+        console.error(
+          tag,
+          chalk.red(`Error [${msg.payload.code}]:`),
+          msg.payload.message
+        );
         if (
           msg.payload.code === "PARTY_ENDED" ||
           msg.payload.code === "PARTY_NOT_FOUND" ||
