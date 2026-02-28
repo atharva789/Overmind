@@ -518,23 +518,32 @@ export default function App({ connection, session }: AppProps): React.ReactEleme
             if (!content.trim()) return;
             if (state.currentPromptId) return;
 
-            if (content.startsWith("/story")) {
-                const storyContent = content.replace(/^\/story\s*/i, "");
-                if (!storyContent) {
+            if (content.startsWith("/code")) {
+                const codeContent = content.replace(/^\/code\s*/i, "");
+                if (!codeContent) {
                     dispatch({
                         type: "ERROR",
-                        message: "Story prompt cannot be empty.",
-                        code: "STORY_INVALID",
+                        message: "Code prompt cannot be empty.",
+                        code: "INVALID_MESSAGE",
                     });
                     return;
                 }
-                dispatch({ type: "LOCAL_STORY_SUBMITTED" });
-                session.submitStoryPrompt(promptId, storyContent);
+                dispatch({ type: "LOCAL_PROMPT_SUBMITTED", promptId });
+                session.submitPrompt(promptId, codeContent);
                 return;
             }
 
-            dispatch({ type: "LOCAL_PROMPT_SUBMITTED", promptId });
-            session.submitPrompt(promptId, content);
+            const storyContent = content.replace(/^\/story\s*/i, "");
+            if (!storyContent) {
+                dispatch({
+                    type: "ERROR",
+                    message: "Story prompt cannot be empty.",
+                    code: "STORY_INVALID",
+                });
+                return;
+            }
+            dispatch({ type: "LOCAL_STORY_SUBMITTED" });
+            session.submitStoryPrompt(promptId, storyContent);
         },
         [session, state.currentPromptId]
     );

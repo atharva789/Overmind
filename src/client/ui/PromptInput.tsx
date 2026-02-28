@@ -94,7 +94,7 @@ export default function PromptInput({
                 value={value}
                 onChange={handleChange}
                 onSubmit={handleSubmit}
-                placeholder="Type a prompt... (/story to update story)"
+                placeholder="Type a prompt... (default /story, use /code)"
             />
         </Box>
     );

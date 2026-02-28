@@ -52,6 +52,6 @@ export default function PromptInput({ disabled, onSubmit, onTyping, onIdle, }) {
     if (disabled) {
         return (_jsxs(Box, { paddingX: 1, children: [_jsxs(Text, { color: "gray", children: [">", " "] }), _jsx(Text, { dimColor: true, children: "Waiting for current prompt to complete..." })] }));
     }
-    return (_jsxs(Box, { paddingX: 1, children: [_jsxs(Text, { color: "green", bold: true, children: [">", " "] }), _jsx(TextInput, { value: value, onChange: handleChange, onSubmit: handleSubmit, placeholder: "Type a prompt... (/story to update story)" })] }));
+    return (_jsxs(Box, { paddingX: 1, children: [_jsxs(Text, { color: "green", bold: true, children: [">", " "] }), _jsx(TextInput, { value: value, onChange: handleChange, onSubmit: handleSubmit, placeholder: "Type a prompt... (default /story, use /code)" })] }));
 }
 //# sourceMappingURL=PromptInput.js.map
