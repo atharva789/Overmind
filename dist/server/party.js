@@ -6,14 +6,12 @@ const generatePartyCode = customAlphabet(PARTY_CODE_ALPHABET, PARTY_CODE_LENGTH)
 export class Party {
     code;
     hostId;
-    projectRoot;
     members = new Map();
     promptQueue = [];
     usernameSet = new Set();
     promptCounter = 0;
-    constructor(connectionId, hostWs, hostUsername, projectRoot) {
+    constructor(connectionId, hostWs, hostUsername) {
         this.code = generatePartyCode();
-        this.projectRoot = projectRoot ?? "";
         const resolvedUsername = this.resolveUsername(hostUsername);
         this.hostId = connectionId;
         this.members.set(connectionId, {

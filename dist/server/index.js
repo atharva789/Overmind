@@ -295,12 +295,11 @@ export function startServer() {
      */
     function handleJoin(ws, connectionId, msg, timeout, onJoined) {
         clearTimeout(timeout);
-        const { partyCode, username, projectRoot } = msg.payload;
-        const basename = (p) => p.split("/").pop() ?? p;
+        const { partyCode, username } = msg.payload;
         // Reserved party — first joiner becomes host
         if (pendingParties.has(partyCode)) {
             pendingParties.delete(partyCode);
-            const party = new Party(connectionId, ws, username, projectRoot);
+            const party = new Party(connectionId, ws, username);
             party.code = partyCode;
             parties.set(partyCode, party);
             orchestrators.set(partyCode, new Orchestrator(PROJECT_ROOT));
@@ -340,22 +339,6 @@ export function startServer() {
             });
             ws.close();
             return;
-        }
-        // Check project root matches
-        if (projectRoot && party.projectRoot) {
-            const joinerProject = basename(projectRoot);
-            const hostProject = basename(party.projectRoot);
-            if (joinerProject !== hostProject) {
-                sendRaw(ws, {
-                    type: "error",
-                    payload: {
-                        message: `Project mismatch: you are in "${joinerProject}" but the host is in "${hostProject}". All members must work in the same project.`,
-                        code: ErrorCode.PROJECT_MISMATCH,
-                    },
-                });
-                ws.close();
-                return;
-            }
         }
         const resolvedUsername = party.addMember(ws, username, connectionId);
         log(`${resolvedUsername} joined`, partyCode);
@@ -698,11 +681,16 @@ function drainPendingExecutions() {
  * Does not throw; errors are sent to the submitter.
  */
 async function runExecutionFlow(party, entry, evaluation) {
-    let orchestrator = orchestrators.get(party.code);
+    const orchestrator = orchestrators.get(party.code);
     if (!orchestrator) {
-        const projectRoot = process.env["OVERMIND_PROJECT_ROOT"] ?? process.cwd();
-        orchestrator = new Orchestrator(projectRoot);
-        orchestrators.set(party.code, orchestrator);
+        party.sendTo(entry.connectionId, {
+            type: "error",
+            payload: {
+                message: "Execution backend unavailable",
+                code: ErrorCode.EXECUTION_FAILED,
+            },
+        });
+        return;
     }
     for await (const event of orchestrator.execute(entry, evaluation)) {
         handleExecutionEvent(party, entry, event);

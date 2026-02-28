@@ -95,13 +95,6 @@ Output ONLY a valid markdown document with a H1 title, a short intro, and a sect
         if (markdown) {
             await writeFile(join(projectRoot, "story.md"), markdown.trim(), "utf8");
             console.log("[story-agent] Wrote initial story.md");
-            try {
-                // Mark the project as initialized so the setup wizard doesn't run again for this project root
-                await pool.query("INSERT INTO projects (id, initialized) VALUES ($1, true) ON CONFLICT (id) DO UPDATE SET initialized = true", [projectId]);
-            }
-            catch (dbErr) {
-                console.error("[story-agent] Failed to record project initialization state:", dbErr);
-            }
         }
     }
     catch (err) {

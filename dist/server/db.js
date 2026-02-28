@@ -44,12 +44,6 @@ export const pool = {
 export async function initDb() {
     try {
         db.exec(`
-            CREATE TABLE IF NOT EXISTS projects (
-                id TEXT PRIMARY KEY,
-                initialized INTEGER DEFAULT 0
-            );
-        `);
-        db.exec(`
             CREATE TABLE IF NOT EXISTS features (
                 id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
                 title TEXT NOT NULL,

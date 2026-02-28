@@ -30,16 +30,14 @@ export interface PromptEntry {
 export class Party {
     code: string;
     hostId: string;
-    projectRoot: string;
     members: Map<string, Member> = new Map();
     promptQueue: PromptEntry[] = [];
 
     private usernameSet: Set<string> = new Set();
     private promptCounter = 0;
 
-    constructor(connectionId: string, hostWs: WebSocket, hostUsername: string, projectRoot?: string) {
+    constructor(connectionId: string, hostWs: WebSocket, hostUsername: string) {
         this.code = generatePartyCode();
-        this.projectRoot = projectRoot ?? "";
         const resolvedUsername = this.resolveUsername(hostUsername);
         this.hostId = connectionId;
 

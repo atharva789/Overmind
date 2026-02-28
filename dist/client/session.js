@@ -27,7 +27,6 @@ export class Session {
                 payload: {
                     partyCode: this.partyCode,
                     username: this.username,
-                    projectRoot: process.cwd(),
                 },
             });
         });

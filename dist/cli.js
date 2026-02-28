@@ -11,7 +11,7 @@ import { decodeInviteCode, encodeInviteCode, isInviteCode } from "./shared/invit
 import App from "./client/ui/App.js";
 import clipboardy from "clipboardy";
 import { basename } from "path";
-import { pool, initDb } from "./server/db.js";
+import { pool } from "./server/db.js";
 import { generateInitialStory } from "./server/story/agent.js";
 import { GoogleGenAI } from "@google/genai";
 import * as p from "@clack/prompts";
@@ -37,12 +37,9 @@ program
     const projectRoot = process.env["OVERMIND_PROJECT_ROOT"] ?? process.cwd();
     const projectId = basename(projectRoot);
     // --- Core Features Setup Wizard ---
-    // Ensure DB schema exists before querying projects table
-    await initDb();
     try {
-        const { rows } = await pool.query("SELECT initialized FROM projects WHERE id = $1", [projectId]);
-        const isInitialized = rows.length > 0 && rows[0].initialized === 1;
-        if (!isInitialized && isTTY) {
+        const { rows } = (await pool.query("SELECT COUNT(*) as count FROM features WHERE project_id = $1", [projectId]));
+        if (rows[0].count === "0" && isTTY) {
             const apiKey = process.env["GEMINI_API_KEY"];
             if (apiKey) {
                 p.intro(`Welcome to Overmind! Looking at new project: ${projectId}`);

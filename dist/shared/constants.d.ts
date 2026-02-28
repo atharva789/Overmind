@@ -13,7 +13,6 @@ export declare const ErrorCode: {
     readonly PARTY_FULL: "PARTY_FULL";
     readonly HOST_DISCONNECTED: "HOST_DISCONNECTED";
     readonly EXECUTION_FAILED: "EXECUTION_FAILED";
-    readonly PROJECT_MISMATCH: "PROJECT_MISMATCH";
 };
 export type ErrorCodeValue = (typeof ErrorCode)[keyof typeof ErrorCode];
 export declare const DEFAULT_PORT = 4444;
