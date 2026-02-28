@@ -11,8 +11,9 @@ export class Session {
         this.partyCode = options.partyCode;
         this.username = options.username;
         this.silent = options.silent ?? false;
+        const url = options.serverUrl ?? `ws://${host}:${port}`;
         this.connection = new Connection({
-            url: `ws://${host}:${port}`,
+            url,
         });
         this.setupHandlers();
     }

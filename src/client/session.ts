@@ -5,6 +5,7 @@ import { DEFAULT_PORT } from "../shared/constants.js";
 export interface SessionOptions {
     host?: string;
     port?: number;
+    serverUrl?: string;
     partyCode: string;
     username: string;
     /** If true, skip console.log handlers (UI mode handles display) */
@@ -23,9 +24,9 @@ export class Session {
         this.partyCode = options.partyCode;
         this.username = options.username;
         this.silent = options.silent ?? false;
-
+        const url = options.serverUrl ?? `ws://${host}:${port}`;
         this.connection = new Connection({
-            url: `ws://${host}:${port}`,
+            url,
         });
 
         this.setupHandlers();

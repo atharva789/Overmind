@@ -5,6 +5,7 @@ interface StatusBarProps {
     connectionStatus: "connected" | "reconnecting" | "disconnected";
     greenlightAvailable?: boolean;
     executionBackendAvailable?: boolean;
+    inviteCode?: string;
 }
-export default function StatusBar({ partyCode, memberCount, connectionStatus, greenlightAvailable, executionBackendAvailable, }: StatusBarProps): React.ReactElement;
+export default function StatusBar({ partyCode, memberCount, connectionStatus, greenlightAvailable, executionBackendAvailable, inviteCode, }: StatusBarProps): React.ReactElement;
 export {};

@@ -7,6 +7,7 @@ interface StatusBarProps {
     connectionStatus: "connected" | "reconnecting" | "disconnected";
     greenlightAvailable?: boolean;
     executionBackendAvailable?: boolean;
+    inviteCode?: string;
 }
 
 export default function StatusBar({
@@ -15,6 +16,7 @@ export default function StatusBar({
     connectionStatus,
     greenlightAvailable = true,
     executionBackendAvailable = true,
+    inviteCode,
 }: StatusBarProps): React.ReactElement {
     const { stdout } = useStdout();
     const width = stdout?.columns ?? 80;
@@ -38,7 +40,11 @@ export default function StatusBar({
     if (!greenlightAvailable) warnings.push("⚠ Greenlight unavailable");
     if (!executionBackendAvailable) warnings.push("⚠ Execution offline");
 
-    const content = `OVERMIND · Party: ${partyCode} · ${memberCount} member${memberCount !== 1 ? "s" : ""} · `;
+    const inviteLabel = inviteCode ? `Invite: ${inviteCode} · ` : "";
+    const content =
+        `OVERMIND · Party: ${partyCode} · ` +
+        `${memberCount} member${memberCount !== 1 ? "s" : ""} · ` +
+        inviteLabel;
 
     const maxLen = Math.max(width - 20, 30);
     const truncated = content.length > maxLen ? content.slice(0, maxLen) + "…" : content;
