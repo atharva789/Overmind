@@ -43,13 +43,13 @@ export async function checkAndRunStoryAgent(projectRoot: string) {
     const model = process.env["OVERMIND_MODEL"] ?? GEMINI_MODEL_DEFAULT;
 
     try {
-        const { rows: totalQueries } = await pool.query("SELECT COUNT(*) as count FROM queries");
         const { rows: totalFeatures } = await pool.query("SELECT COUNT(*) as count FROM features");
 
         // 1. Empty State: Summarize codebase into Core Features
-        if (totalQueries[0].count === "0" && totalFeatures[0].count === "0") {
+        // We only do this if there are NO features yet. We don't return early so that
+        // the query that triggered this (if any) still gets clustered below.
+        if (totalFeatures[0].count === "0") {
             await generateInitialStory(ai, model, projectRoot);
-            return;
         }
 
         // 2. Continuous State: Semantically cluster each unclustered query
