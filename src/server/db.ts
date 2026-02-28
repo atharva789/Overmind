@@ -16,11 +16,19 @@ export async function initDb() {
     const client = await pool.connect();
     try {
         await client.query(`
+            CREATE TABLE IF NOT EXISTS projects (
+                id VARCHAR PRIMARY KEY,
+                initialized BOOLEAN DEFAULT FALSE
+            );
+        `);
+
+        await client.query(`
             CREATE TABLE IF NOT EXISTS features (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 title TEXT NOT NULL,
                 description TEXT NOT NULL,
-                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                project_id VARCHAR REFERENCES projects(id) ON DELETE CASCADE
             );
         `);
 
@@ -30,7 +38,8 @@ export async function initDb() {
                 content TEXT NOT NULL,
                 username TEXT NOT NULL,
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                feature_id UUID REFERENCES features(id) ON DELETE SET NULL
+                feature_id UUID REFERENCES features(id) ON DELETE SET NULL,
+                project_id VARCHAR REFERENCES projects(id) ON DELETE CASCADE
             );
         `);
 

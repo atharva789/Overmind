@@ -805,16 +805,11 @@ async function runExecutionFlow(
     entry: PromptEntry,
     evaluation: EvaluationResult
 ): Promise<void> {
-    const orchestrator = orchestrators.get(party.code);
+    let orchestrator = orchestrators.get(party.code);
     if (!orchestrator) {
-        party.sendTo(entry.connectionId, {
-            type: "error",
-            payload: {
-                message: "Execution backend unavailable",
-                code: ErrorCode.EXECUTION_FAILED,
-            },
-        });
-        return;
+        const projectRoot = process.env["OVERMIND_PROJECT_ROOT"] ?? process.cwd();
+        orchestrator = new Orchestrator(projectRoot, MODAL_BRIDGE_URL);
+        orchestrators.set(party.code, orchestrator);
     }
 
     for await (const event of orchestrator.execute(entry, evaluation)) {
