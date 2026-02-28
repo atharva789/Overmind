@@ -70,7 +70,11 @@ function isRemoteOrchestratorEnabled() {
  */
 function buildRemoteOrchestratorHealthUrl() {
     const trimmed = OVERMIND_ORCHESTRATOR_URL.replace(/\/+$/u, "");
+    const runSuffix = "/runs";
     const executeSuffix = "/execute";
+    if (trimmed.endsWith(runSuffix)) {
+        return `${trimmed.slice(0, -runSuffix.length)}/health`;
+    }
     if (trimmed.endsWith(executeSuffix)) {
         return `${trimmed.slice(0, -executeSuffix.length)}/health`;
     }
@@ -300,7 +304,7 @@ export function startServer() {
             const party = new Party(connectionId, ws, username);
             party.code = partyCode;
             parties.set(partyCode, party);
-            orchestrators.set(partyCode, new Orchestrator(PROJECT_ROOT, MODAL_BRIDGE_URL));
+            orchestrators.set(partyCode, new Orchestrator(PROJECT_ROOT));
             log(`${username} created and joined as host`, partyCode);
             party.sendTo(connectionId, {
                 type: "join-ack",
@@ -619,7 +623,10 @@ export function startServer() {
                 }
             }
             catch (err) {
-                log(`Evaluation error: ${err instanceof Error ? err.message : String(err)}`, partyCode);
+                const errorMessage = err instanceof Error
+                    ? err.message
+                    : String(err);
+                log(`Evaluation error: ${errorMessage}`, partyCode);
             }
         });
         evalQueues.set(partyCode, next);

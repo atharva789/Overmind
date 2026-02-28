@@ -41,6 +41,7 @@ export declare const OVERMIND_ORCHESTRATOR_URL: string;
 export declare const AGENT_CMD: string;
 export declare const AGENT_ARGS: string[];
 export declare const AGENT_TIMEOUT_S: number;
+export declare const OVERMIND_ORCHESTRATOR_POLL_MS: number;
 export declare const OVERMIND_ORCHESTRATOR_TIMEOUT_MS: number;
 export declare const OVERMIND_WRITE_ALLOWLIST: string[];
 export declare const MAX_CONCURRENT_SANDBOXES: number;
