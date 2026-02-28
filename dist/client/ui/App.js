@@ -1,5 +1,5 @@
 import { jsx as _jsx, jsxs as _jsxs } from "react/jsx-runtime";
-import { useReducer, useEffect, useCallback } from "react";
+import { useReducer, useEffect, useCallback, useState } from "react";
 import { Box, Text, useApp, useInput, useStdout } from "ink";
 import StatusBar from "./StatusBar.js";
 import PartyPanel from "./PartyPanel.js";
@@ -216,12 +216,20 @@ function reducer(state, action) {
             return { ...state, errorMessage: action.message };
         case "SET_VIEWING":
             return { ...state, viewingMember: action.username };
+        case "CANCEL_PROMPT":
+            return {
+                ...state,
+                currentPromptId: null,
+                execution: null,
+                errorMessage: null,
+            };
         default:
             return state;
     }
 }
 export default function App({ connection, session, inviteCode }) {
     const [state, dispatch] = useReducer(reducer, initialState);
+    const [focusArea, setFocusArea] = useState("main");
     const { stdout } = useStdout();
     const height = stdout?.rows ?? 30;
     const { exit } = useApp();
@@ -229,6 +237,16 @@ export default function App({ connection, session, inviteCode }) {
     useInput(useCallback((input, key) => {
         if (state.partyEnded) {
             exit();
+            return;
+        }
+        // Tab to switch focus between main content and activity feed
+        if (key.tab) {
+            setFocusArea((prev) => (prev === "main" ? "activity" : "main"));
+            return;
+        }
+        // Escape to cancel/dismiss current prompt
+        if (key.escape) {
+            dispatch({ type: "CANCEL_PROMPT" });
             return;
         }
         // Screen Viewing (Ctrl+1...8)
@@ -427,22 +445,23 @@ export default function App({ connection, session, inviteCode }) {
     }
     // ─── Render main content area ───
     const renderMainContent = () => {
+        const mainFocused = focusArea === "main";
         // Viewing someone else's screen
         if (state.viewingMember) {
             const exec = state.memberExecutions[state.viewingMember];
-            return (_jsxs(Box, { flexDirection: "column", flexGrow: 1, borderStyle: "single", borderColor: "magenta", children: [_jsx(Box, { paddingX: 1, borderBottom: true, borderColor: "magenta", children: _jsxs(Text, { bold: true, color: "magenta", children: ["\uD83D\uDC40 Viewing ", state.viewingMember, "'s Screen (Ctrl+your index to exit)"] }) }), _jsx(Box, { flexDirection: "column", flexGrow: 1, children: exec ? (_jsx(ExecutionView, { execution: exec })) : (_jsx(Box, { flexDirection: "column", flexGrow: 1, justifyContent: "center", alignItems: "center", children: _jsxs(Text, { dimColor: true, children: [state.viewingMember, " is not currently executing a prompt."] }) })) })] }));
+            return (_jsxs(Box, { flexDirection: "column", flexGrow: 1, borderStyle: "single", borderColor: "magenta", children: [_jsx(Box, { paddingX: 1, borderBottom: true, borderColor: "magenta", children: _jsxs(Text, { bold: true, color: "magenta", children: ["\uD83D\uDC40 Viewing ", state.viewingMember, "'s Screen (Ctrl+your index to exit)"] }) }), _jsx(Box, { flexDirection: "column", flexGrow: 1, children: exec ? (_jsx(ExecutionView, { execution: exec, focused: mainFocused })) : (_jsx(Box, { flexDirection: "column", flexGrow: 1, justifyContent: "center", alignItems: "center", children: _jsxs(Text, { dimColor: true, children: [state.viewingMember, " is not currently executing a prompt."] }) })) })] }));
         }
         // Show ExecutionView for submitter during execution
         if (state.execution && !state.execution.completed) {
-            return _jsx(ExecutionView, { execution: state.execution });
+            return _jsx(ExecutionView, { execution: state.execution, focused: mainFocused });
         }
         // Show completed execution
         if (state.execution?.completed) {
-            return _jsx(ExecutionView, { execution: state.execution });
+            return _jsx(ExecutionView, { execution: state.execution, focused: mainFocused });
         }
         // Default: OutputView
         return (_jsx(OutputView, { outputs: state.outputs, currentPromptId: state.currentPromptId }));
     };
-    return (_jsxs(Box, { flexDirection: "column", height: height, children: [_jsx(StatusBar, { partyCode: state.partyCode, memberCount: state.members.length, connectionStatus: state.connectionStatus, executionBackendAvailable: state.executionBackendAvailable, inviteCode: state.isHost ? inviteCode : undefined }), _jsxs(Box, { flexDirection: "row", flexGrow: 1, children: [_jsx(PartyPanel, { members: state.members }), renderMainContent()] }), currentReview && state.isHost && !state.viewingMember && (_jsx(ReviewPanel, { request: currentReview, onApprove: handleApprove, onDeny: handleDeny })), _jsx(ActivityFeed, { events: state.events }), _jsx(PromptInput, { disabled: inputDisabled, onSubmit: handlePromptSubmit, onTyping: handleTyping, onIdle: handleIdle })] }));
+    return (_jsxs(Box, { flexDirection: "column", height: height, children: [_jsx(StatusBar, { partyCode: state.partyCode, memberCount: state.members.length, connectionStatus: state.connectionStatus, executionBackendAvailable: state.executionBackendAvailable, inviteCode: state.isHost ? inviteCode : undefined }), _jsxs(Box, { flexDirection: "row", flexGrow: 1, children: [_jsx(PartyPanel, { members: state.members }), renderMainContent()] }), currentReview && state.isHost && !state.viewingMember && (_jsx(ReviewPanel, { request: currentReview, onApprove: handleApprove, onDeny: handleDeny })), _jsx(ActivityFeed, { events: state.events, focused: focusArea === "activity" }), _jsx(PromptInput, { disabled: inputDisabled, onSubmit: handlePromptSubmit, onTyping: handleTyping, onIdle: handleIdle })] }));
 }
 //# sourceMappingURL=App.js.map

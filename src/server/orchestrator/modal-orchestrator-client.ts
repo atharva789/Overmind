@@ -9,6 +9,7 @@ import { z } from "zod";
 import { OVERMIND_ORCHESTRATOR_TIMEOUT_MS } from "../../shared/constants.js";
 
 const MAX_RETRIES = 2;
+const PER_REQUEST_TIMEOUT_MS = 30_000;
 
 export interface RunCreatePayload {
     runId: string;
@@ -21,11 +22,11 @@ export interface RunCreatePayload {
 
 export interface RunStatus {
     status: "queued" | "running" | "completed" | "failed" | "canceled";
-    stage?: string;
-    detail?: string;
-    files?: Array<{ path: string; content: string }>;
-    summary?: string;
-    error?: string;
+    stage?: string | null;
+    detail?: string | null;
+    files?: Array<{ path: string; content: string }> | null;
+    summary?: string | null;
+    error?: string | null;
 }
 
 type LogFn = (message: string) => void;
@@ -42,13 +43,13 @@ const RunStatusSchema = z.object({
         "failed",
         "canceled",
     ]),
-    stage: z.string().optional(),
-    detail: z.string().optional(),
+    stage: z.string().nullish(),
+    detail: z.string().nullish(),
     files: z.array(
         z.object({ path: z.string(), content: z.string() })
-    ).optional(),
-    summary: z.string().optional(),
-    error: z.string().optional(),
+    ).nullish(),
+    summary: z.string().nullish(),
+    error: z.string().nullish(),
 });
 
 const RunCancelResponseSchema = z.object({
@@ -231,7 +232,7 @@ export class ModalOrchestratorClient {
             { method: "GET", headers: buildJsonHeaders() },
             RunStatusSchema,
             this.log,
-            this.timeoutMs
+            PER_REQUEST_TIMEOUT_MS
         );
     }
 

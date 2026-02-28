@@ -16,8 +16,10 @@ const EXCLUDED_DIRS = new Set([
     "dist",
     ".overmind",
     "modal-bridge",
+    "modal",
+    "__pycache__",
 ]);
-const MAX_LIST_DEPTH = 3;
+const MAX_LIST_DEPTH = 10;
 
 export interface FilePack {
     files: Record<string, string>;
@@ -146,9 +148,24 @@ function collectPatternMatches(
     });
 }
 
+const BINARY_EXTENSIONS = new Set([
+    ".png", ".jpg", ".jpeg", ".gif", ".ico", ".bmp", ".webp",
+    ".woff", ".woff2", ".ttf", ".eot", ".otf",
+    ".zip", ".tar", ".gz", ".bz2", ".7z",
+    ".pdf", ".exe", ".dll", ".so", ".dylib",
+    ".mp3", ".mp4", ".wav", ".avi", ".mov",
+    ".sqlite", ".db",
+]);
+
+function isBinaryFile(relPath: string): boolean {
+    const ext = path.extname(relPath).toLowerCase();
+    return BINARY_EXTENSIONS.has(ext);
+}
+
 /**
  * Build the required file list for a given evaluation scope.
- * Does not include files outside explicit scope and patterns.
+ * Includes all project files (excluding binary and excluded dirs)
+ * so the remote worker has full project context.
  */
 function collectRequiredFiles(
     projectRoot: string,
@@ -157,10 +174,14 @@ function collectRequiredFiles(
 ): Set<string> {
     const required = new Set<string>();
 
-    addFileIfExists(projectRoot, "context.md", required);
-    addFileIfExists(projectRoot, "package.json", required);
-    addFileIfExists(projectRoot, "tsconfig.json", required);
+    // Walk the entire project tree
+    walkFiles(projectRoot, ".", 0, (relPath) => {
+        if (!isBinaryFile(relPath)) {
+            required.add(relPath);
+        }
+    });
 
+    // Ensure explicitly scoped files are included
     for (const relPath of evaluation.affectedFiles) {
         addFileIfExists(projectRoot, relPath, required);
     }

@@ -1,4 +1,4 @@
-import React, { useReducer, useEffect, useCallback } from "react";
+import React, { useReducer, useEffect, useCallback, useState } from "react";
 import { Box, Text, useApp, useInput, useStdout } from "ink";
 import type { Connection } from "../connection.js";
 import type { Session } from "../session.js";
@@ -83,7 +83,8 @@ type Action =
     | { type: "MEMBER_EXECUTION_UPDATE"; username: string; promptId: string; stage: string }
     | { type: "MEMBER_EXECUTION_COMPLETE"; username: string; promptId: string; files: FileChange[]; summary: string }
     | { type: "SYSTEM_STATUS"; executionBackendAvailable: boolean }
-    | { type: "SET_VIEWING"; username: string | null };
+    | { type: "SET_VIEWING"; username: string | null }
+    | { type: "CANCEL_PROMPT" };
 
 function addOutput(
     outputs: OutputEntry[],
@@ -316,6 +317,14 @@ function reducer(state: AppState, action: Action): AppState {
         case "SET_VIEWING":
             return { ...state, viewingMember: action.username };
 
+        case "CANCEL_PROMPT":
+            return {
+                ...state,
+                currentPromptId: null,
+                execution: null,
+                errorMessage: null,
+            };
+
         default:
             return state;
     }
@@ -329,8 +338,11 @@ interface AppProps {
     inviteCode?: string;
 }
 
+type FocusArea = "main" | "activity";
+
 export default function App({ connection, session, inviteCode }: AppProps): React.ReactElement {
     const [state, dispatch] = useReducer(reducer, initialState);
+    const [focusArea, setFocusArea] = useState<FocusArea>("main");
     const { stdout } = useStdout();
     const height = stdout?.rows ?? 30;
     const { exit } = useApp();
@@ -340,6 +352,18 @@ export default function App({ connection, session, inviteCode }: AppProps): Reac
         useCallback((input: string, key) => {
             if (state.partyEnded) {
                 exit();
+                return;
+            }
+
+            // Tab to switch focus between main content and activity feed
+            if (key.tab) {
+                setFocusArea((prev) => (prev === "main" ? "activity" : "main"));
+                return;
+            }
+
+            // Escape to cancel/dismiss current prompt
+            if (key.escape) {
+                dispatch({ type: "CANCEL_PROMPT" });
                 return;
             }
 
@@ -564,6 +588,8 @@ export default function App({ connection, session, inviteCode }: AppProps): Reac
 
     // ─── Render main content area ───
     const renderMainContent = () => {
+        const mainFocused = focusArea === "main";
+
         // Viewing someone else's screen
         if (state.viewingMember) {
             const exec = state.memberExecutions[state.viewingMember];
@@ -575,7 +601,7 @@ export default function App({ connection, session, inviteCode }: AppProps): Reac
                     </Box>
                     <Box flexDirection="column" flexGrow={1}>
                         {exec ? (
-                            <ExecutionView execution={exec} />
+                            <ExecutionView execution={exec} focused={mainFocused} />
                         ) : (
                             <Box flexDirection="column" flexGrow={1} justifyContent="center" alignItems="center">
                                 <Text dimColor>{state.viewingMember} is not currently executing a prompt.</Text>
@@ -588,12 +614,12 @@ export default function App({ connection, session, inviteCode }: AppProps): Reac
 
         // Show ExecutionView for submitter during execution
         if (state.execution && !state.execution.completed) {
-            return <ExecutionView execution={state.execution} />;
+            return <ExecutionView execution={state.execution} focused={mainFocused} />;
         }
 
         // Show completed execution
         if (state.execution?.completed) {
-            return <ExecutionView execution={state.execution} />;
+            return <ExecutionView execution={state.execution} focused={mainFocused} />;
         }
 
         // Default: OutputView
@@ -627,7 +653,7 @@ export default function App({ connection, session, inviteCode }: AppProps): Reac
                 />
             )}
 
-            <ActivityFeed events={state.events} />
+            <ActivityFeed events={state.events} focused={focusArea === "activity"} />
             <PromptInput
                 disabled={inputDisabled}
                 onSubmit={handlePromptSubmit}

@@ -143,10 +143,33 @@ def strip_code_fences(text: str) -> str:
     """
     trimmed = text.strip()
     if trimmed.startswith("```"):
-        trimmed = re.sub(r"^```[a-zA-Z0-9]*\\n", "", trimmed)
+        trimmed = re.sub(r"^```[a-zA-Z0-9]*\n", "", trimmed)
         if trimmed.endswith("```"):
             trimmed = trimmed[: -3]
     return trimmed.strip()
+
+
+def extract_json_from_output(text: str) -> str:
+    """
+    Extract JSON object from model output that may contain channel markers.
+    The model (openai/gpt-oss-20b) uses channel delimiters like
+    <|channel|>final<|endchannel|> around its output. This function
+    finds the outermost JSON object in the text.
+    """
+    # First try the raw text as-is
+    stripped = strip_code_fences(text)
+    if stripped.startswith("{"):
+        return stripped
+
+    # Find the first { and last } to extract the JSON object
+    first_brace = text.find("{")
+    last_brace = text.rfind("}")
+    if first_brace != -1 and last_brace > first_brace:
+        candidate = text[first_brace : last_brace + 1]
+        return strip_code_fences(candidate)
+
+    # Last resort: return stripped text (will fail at json.loads with a clear error)
+    return stripped
 
 
 def validate_llm_response(payload: Any) -> LlmResponse:
@@ -334,7 +357,8 @@ async def call_llm(req: RunCreateRequest) -> LlmResponse:
     if not isinstance(content, str) or not content.strip():
         raise ValueError("LLM response missing content")
 
-    cleaned = strip_code_fences(content)
+    log(f"raw LLM content (first 300 chars): {content[:300]}")
+    cleaned = extract_json_from_output(content)
     parsed = json.loads(cleaned)
     return validate_llm_response(parsed)
 
@@ -351,7 +375,13 @@ async def run_worker(run_id: str, req: RunCreateRequest) -> None:
     Edge cases: Cancels early if run is marked canceled.
     Invariants: Updates run status on all exit paths.
     """
-    mark_run_running(run_id)
+    log(f"worker started for run_id={run_id}")
+
+    try:
+        mark_run_running(run_id)
+    except Exception as exc:
+        log(f"FATAL: failed to mark run running: {exc}")
+        return
 
     if should_cancel(run_id):
         mark_run_canceled(run_id, "Run canceled before execution.")
@@ -360,6 +390,7 @@ async def run_worker(run_id: str, req: RunCreateRequest) -> None:
     try:
         result = await call_llm(req)
     except (ValidationError, json.JSONDecodeError, ValueError) as exc:
+        log(f"run_id={run_id} parse error: {exc}")
         mark_run_failed(
             run_id,
             STAGE_EXTRACTING,
@@ -368,6 +399,7 @@ async def run_worker(run_id: str, req: RunCreateRequest) -> None:
         )
         return
     except Exception as exc:
+        log(f"run_id={run_id} LLM error: {exc}")
         mark_run_failed(
             run_id,
             STAGE_WORKING,
@@ -376,6 +408,7 @@ async def run_worker(run_id: str, req: RunCreateRequest) -> None:
         )
         return
 
+    log(f"run_id={run_id} completed with {len(result.files)} file(s)")
     mark_run_completed(run_id, result)
 
 

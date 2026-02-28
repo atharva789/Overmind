@@ -9,6 +9,7 @@ export interface ExecutionState {
 }
 interface ExecutionViewProps {
     execution: ExecutionState;
+    focused?: boolean;
 }
-export default function ExecutionView({ execution, }: ExecutionViewProps): React.ReactElement;
+export default function ExecutionView({ execution, focused, }: ExecutionViewProps): React.ReactElement;
 export {};

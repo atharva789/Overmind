@@ -6,6 +6,7 @@ export interface ActivityEvent {
 }
 interface ActivityFeedProps {
     events: ActivityEvent[];
+    focused?: boolean;
 }
-export default function ActivityFeed({ events }: ActivityFeedProps): React.ReactElement;
+export default function ActivityFeed({ events, focused }: ActivityFeedProps): React.ReactElement;
 export {};

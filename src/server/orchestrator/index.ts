@@ -286,7 +286,9 @@ export class Orchestrator {
         initialStage: string | null
     ): AsyncGenerator<RunPollEvent> {
         const startTime = Date.now();
+        const STALE_QUEUED_TIMEOUT_MS = 2 * 60 * 1000; // 2 minutes
         let lastStage: string | null = initialStage;
+        let everLeftQueued = false;
 
         while (true) {
             const elapsed = Date.now() - startTime;
@@ -298,7 +300,23 @@ export class Orchestrator {
             const status = await client.getRun(runId);
             this.logRunDetail(promptId, status);
 
-            const stage = this.normalizeStage(status.stage);
+            if (status.status !== "queued") {
+                everLeftQueued = true;
+            }
+
+            if (
+                !everLeftQueued
+                && status.status === "queued"
+                && elapsed > STALE_QUEUED_TIMEOUT_MS
+            ) {
+                await this.cancelRunSafely(promptId, runId, client);
+                throw new Error(
+                    "Worker failed to start — run stuck in queued state. "
+                    + "Check Modal deployment, secrets, and function logs."
+                );
+            }
+
+            const stage = this.normalizeStage(status.stage ?? undefined);
             if (stage && stage !== lastStage) {
                 lastStage = stage;
                 yield { type: "stage", stage };
