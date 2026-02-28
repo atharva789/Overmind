@@ -352,6 +352,30 @@ export declare const ServerMessageSchema: z.ZodDiscriminatedUnion<"type", [z.Zod
         conflicts: string[];
     };
 }>, z.ZodObject<{
+    type: z.ZodLiteral<"feature-created">;
+    payload: z.ZodObject<{
+        promptId: z.ZodString;
+        title: z.ZodString;
+    }, "strip", z.ZodTypeAny, {
+        promptId: string;
+        title: string;
+    }, {
+        promptId: string;
+        title: string;
+    }>;
+}, "strip", z.ZodTypeAny, {
+    type: "feature-created";
+    payload: {
+        promptId: string;
+        title: string;
+    };
+}, {
+    type: "feature-created";
+    payload: {
+        promptId: string;
+        title: string;
+    };
+}>, z.ZodObject<{
     type: z.ZodLiteral<"activity">;
     payload: z.ZodObject<{
         username: z.ZodString;

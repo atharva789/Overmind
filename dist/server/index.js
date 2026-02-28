@@ -5,13 +5,15 @@
  * Invariants: Prompt content is never broadcast to non-host members.
  */
 import { WebSocketServer, WebSocket } from "ws";
+import { basename } from "path";
 import { customAlphabet } from "nanoid";
 import { spawn } from "node:child_process";
 import { Party } from "./party.js";
 import { parseClientMessage } from "../shared/protocol.js";
 import { DEFAULT_PORT, JOIN_TIMEOUT_MS, CONNECTION_ID_LENGTH, PARTY_CODE_ALPHABET, PARTY_CODE_LENGTH, MAX_MEMBERS_DEFAULT, MODAL_BRIDGE_URL, MODAL_BRIDGE_PORT, BRIDGE_HEALTH_INTERVAL_MS, OVERMIND_ORCHESTRATOR_URL, ErrorCode, } from "../shared/constants.js";
-import { evaluatePrompt } from "./greenlight/agent.js";
 import { Orchestrator } from "./orchestrator/index.js";
+import { initDb, pool } from "./db.js";
+import { checkAndRunStoryAgent } from "./story/agent.js";
 const generateConnectionId = customAlphabet("abcdefghijklmnopqrstuvwxyz0123456789", CONNECTION_ID_LENGTH);
 const generatePartyCode = customAlphabet(PARTY_CODE_ALPHABET, PARTY_CODE_LENGTH);
 // ─── State ───
@@ -27,6 +29,7 @@ let executionBackendAvailable = false;
 let greenlightAvailable = computeGreenlightAvailable();
 let bridgeProcess = null;
 let bridgeHealthTimer = null;
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 /**
  * Configure the max members allowed per party.
  * Does not retroactively remove existing members.
@@ -227,6 +230,15 @@ export function startServer() {
     const port = Number(process.env["OVERMIND_PORT"]) || DEFAULT_PORT;
     greenlightAvailable = computeGreenlightAvailable();
     void initBridge();
+    initDb()
+        .then(() => {
+        const projectRoot = process.env["OVERMIND_PROJECT_ROOT"] ?? process.cwd();
+        checkAndRunStoryAgent(projectRoot).catch(err => console.error("[story-agent] Startup error:", err));
+    })
+        .catch((err) => {
+        console.error("Failed to initialize database", err);
+        process.exit(1);
+    });
     const wss = new WebSocketServer({ port, host: "0.0.0.0" }, () => {
         log(`Overmind server listening on port ${port} (0.0.0.0)`);
     });
@@ -543,6 +555,7 @@ export function startServer() {
         }
     }
     // ─── Sequential evaluation queue per party ───
+    return wss;
     /**
      * Queue evaluations sequentially per party.
      * Does not execute prompts in parallel.
@@ -554,85 +567,66 @@ export function startServer() {
             if (!parties.has(partyCode))
                 return;
             try {
-                const concurrent = party.promptQueue.filter((p) => p.promptId !== entry.promptId);
-                const result = await evaluatePrompt(entry, concurrent, partyCode);
-                if (!parties.has(partyCode))
-                    return;
-                if (result.verdict === "greenlit") {
+                const projectRoot = process.env["OVERMIND_PROJECT_ROOT"] ?? process.cwd();
+                const projectId = basename(projectRoot);
+                // Insert into DB
+                const insertRes = await pool.query("INSERT INTO queries (project_id, content, username) VALUES ($1, $2, $3) RETURNING id", [projectId, entry.content, entry.username]);
+                const queryId = insertRes.rows[0].id;
+                const results = await checkAndRunStoryAgent(projectRoot) || [];
+                const featureResult = results.find(r => r.queryId === queryId);
+                // 2-second UI delay to let the user see their prompt
+                await sleep(2000);
+                if (featureResult?.type === "new_feature") {
                     party.sendTo(connectionId, {
-                        type: "prompt-greenlit",
-                        payload: {
-                            promptId: entry.promptId,
-                            reasoning: result.reasoning,
-                        },
+                        type: "feature-created",
+                        payload: { promptId: entry.promptId, title: featureResult.title },
                     });
-                    party.broadcast({
-                        type: "activity",
-                        payload: {
-                            username: entry.username,
-                            event: `${entry.username}'s prompt was greenlit ✓`,
-                            timestamp: Date.now(),
-                        },
-                    });
-                    party.broadcast({
-                        type: "member-status",
-                        payload: {
-                            username: entry.username,
-                            status: "executing",
-                        },
-                    });
-                    enqueueExecution(party, entry, result);
                 }
                 else {
                     party.sendTo(connectionId, {
-                        type: "prompt-redlit",
-                        payload: {
-                            promptId: entry.promptId,
-                            reasoning: result.reasoning,
-                            conflicts: result.conflicts,
-                        },
-                    });
-                    party.broadcast({
-                        type: "activity",
-                        payload: {
-                            username: entry.username,
-                            event: `${entry.username}'s prompt was redlit, `
-                                + "awaiting host review ⚠",
-                            timestamp: Date.now(),
-                        },
-                    });
-                    party.broadcast({
-                        type: "member-status",
-                        payload: {
-                            username: entry.username,
-                            status: "awaiting review",
-                        },
-                    });
-                    pendingEvaluations.set(entry.promptId, result);
-                    // Send host-review-request with reasoning
-                    party.sendTo(party.hostId, {
-                        type: "host-review-request",
-                        payload: {
-                            promptId: entry.promptId,
-                            username: entry.username,
-                            content: entry.content,
-                            reasoning: result.reasoning,
-                            conflicts: result.conflicts,
-                        },
+                        type: "prompt-greenlit",
+                        payload: { promptId: entry.promptId, reasoning: "Prompt securely recorded in project memory." },
                     });
                 }
+                party.broadcast({
+                    type: "activity",
+                    payload: {
+                        username: entry.username,
+                        event: `'s prompt was accepted ✓`,
+                        timestamp: Date.now(),
+                    },
+                });
+                party.broadcast({
+                    type: "member-status",
+                    payload: { username: entry.username, status: "executing" },
+                });
+                // Greenlit → auto-trigger execution simulation
+                // Note: We bypass original Greenlight here, so we stub an EvaluationResult
+                const fakeResult = {
+                    verdict: "greenlit",
+                    reasoning: "Prompt securely recorded in project memory.",
+                    conflicts: [],
+                    affectedFiles: [],
+                    executionHints: {
+                        estimatedComplexity: "simple",
+                        requiresBuild: false,
+                        requiresTests: false,
+                        relatedContextFiles: []
+                    }
+                };
+                enqueueExecution(party, entry, fakeResult);
             }
             catch (err) {
                 const errorMessage = err instanceof Error
                     ? err.message
                     : String(err);
-                log(`Evaluation error: ${errorMessage}`, partyCode);
+                log(`Database insert/evaluation error: ${errorMessage}`, partyCode);
             }
         });
         evalQueues.set(partyCode, next);
     }
-    return wss;
 }
+// ─── Sequential execution queue per party (Modal or local) ───
 /**
  * Build a minimal evaluation result when host approves without metadata.
  * Does not infer affected files beyond explicit scope hints.
@@ -657,11 +651,14 @@ function buildFallbackEvaluation(entry, reason) {
  */
 function enqueueExecution(party, entry, evaluation) {
     sendExecutionQueued(party, entry.connectionId, entry.promptId, "Waiting for execution slot...");
-    if (!executionBackendAvailable && !isLocalMode()) {
-        queuePendingExecution(party.code, entry, evaluation);
-        return;
-    }
-    void runExecutionFlow(party, entry, evaluation);
+    // Let the greenlight verdict UI linger for 1.2 seconds
+    setTimeout(() => {
+        if (!executionBackendAvailable && !isLocalMode()) {
+            queuePendingExecution(party.code, entry, evaluation);
+            return;
+        }
+        void runExecutionFlow(party, entry, evaluation);
+    }, 1200);
 }
 /**
  * Store a prompt for later execution when the backend is offline.

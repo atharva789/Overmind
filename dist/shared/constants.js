@@ -29,8 +29,8 @@ export const MINUTE_MS = 60 * SECOND_MS;
 export const RECONNECT_INITIAL_MS = 1000;
 export const RECONNECT_MAX_MS = 10000;
 // ─── Greenlight ───
-export const GREENLIGHT_BACKEND_DEFAULT = "glm";
-export const GEMINI_MODEL_DEFAULT = "gemini-2.0-flash";
+export const GREENLIGHT_BACKEND_DEFAULT = "gemini";
+export const GEMINI_MODEL_DEFAULT = "gemini-2.5-flash";
 export const GLM_MODEL_DEFAULT = "glm-5.0";
 export const MAX_TOOL_ROUNDS = 5;
 export const EVAL_TIMEOUT_MS = 30000;
@@ -58,6 +58,6 @@ export const MAX_CONCURRENT_SANDBOXES = Number(process.env["OVERMIND_MAX_AGENTS"
 export const LOCK_TIMEOUT_MS = 5 * MINUTE_MS;
 export const LOCK_RETRY_DELAY_MS = 500;
 export const BRIDGE_HEALTH_INTERVAL_MS = 10 * SECOND_MS;
-export const ALWAYS_SYNC_PATTERNS = (process.env["OVERMIND_ALWAYS_SYNC"]
-    ?? "context.md,package.json,tsconfig.json").split(",");
+export const ALWAYS_SYNC_PATTERNS = (process.env["OVERMIND_ALWAYS_SYNC"] ??
+    "context.md,package.json,tsconfig.json").split(",");
 //# sourceMappingURL=constants.js.map
