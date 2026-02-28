@@ -1,0 +1,28 @@
+export declare const ErrorCode: {
+    readonly PARTY_NOT_FOUND: "PARTY_NOT_FOUND";
+    readonly JOIN_TIMEOUT: "JOIN_TIMEOUT";
+    readonly PARTY_ENDED: "PARTY_ENDED";
+    readonly INVALID_MESSAGE: "INVALID_MESSAGE";
+    readonly USERNAME_CONFLICT: "USERNAME_CONFLICT";
+    readonly PARTY_FULL: "PARTY_FULL";
+    readonly HOST_DISCONNECTED: "HOST_DISCONNECTED";
+};
+export type ErrorCodeValue = (typeof ErrorCode)[keyof typeof ErrorCode];
+export declare const DEFAULT_PORT = 4444;
+export declare const JOIN_TIMEOUT_MS = 5000;
+export declare const PARTY_CODE_LENGTH = 4;
+export declare const PARTY_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+export declare const CONNECTION_ID_LENGTH = 12;
+export declare const MAX_MEMBERS_DEFAULT = 8;
+export declare const DISCONNECT_TIMEOUT_MS = 30000;
+export declare const RECONNECT_INITIAL_MS = 1000;
+export declare const RECONNECT_MAX_MS = 10000;
+export declare const GREENLIGHT_BACKEND_DEFAULT = "glm";
+export declare const GEMINI_MODEL_DEFAULT = "gemini-2.0-flash";
+export declare const GLM_MODEL_DEFAULT = "glm-5.0";
+export declare const MAX_TOOL_ROUNDS = 5;
+export declare const EVAL_TIMEOUT_MS = 30000;
+export declare const MAX_FILE_READ_LINES = 500;
+export declare const MAX_SEARCH_RESULTS = 50;
+export declare const LOG_TRUNCATE_CHARS = 200;
+export declare const MAX_CONTEXT_PAYLOAD_CHARS = 20000;
