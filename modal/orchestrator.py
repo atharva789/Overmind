@@ -23,7 +23,7 @@ RUN_STORE_NAME = "overmind-orchestrator-runs"
 DEFAULT_LLM_URL = "https://mercanmeh123--overmind-llm-serve.modal.run"
 MODEL_ID = os.environ.get("MODEL_ID", "openai/gpt-oss-20b")
 LLM_URL = os.environ.get("OVERMIND_LLM_URL", DEFAULT_LLM_URL).rstrip("/")
-LLM_TIMEOUT_S = int(os.environ.get("OVERMIND_LLM_TIMEOUT_S", "60"))
+LLM_TIMEOUT_S = int(os.environ.get("OVERMIND_LLM_TIMEOUT_S", "3600"))
 LOG_TRUNCATE_CHARS = 200
 LLM_SECRET_NAME = "overmind-llm-auth"
 
@@ -342,6 +342,7 @@ async def call_llm(req: RunCreateRequest) -> LlmResponse:
 @app.function(
     image=image,
     secrets=[modal.Secret.from_name(LLM_SECRET_NAME)],
+    timeout=3600,
 )
 async def run_worker(run_id: str, req: RunCreateRequest) -> None:
     """

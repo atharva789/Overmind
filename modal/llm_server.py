@@ -46,11 +46,14 @@ def build_command(api_key: str | None) -> list[str]:
 
 
 @app.function(
-    gpu=modal.gpu.H100(),
+    gpu="H100",
     image=image,
     secrets=[modal.Secret.from_name(LLM_SECRET_NAME)],
+    timeout=3600,
+    allow_concurrent_inputs=100,
+    concurrency_limit=1,
 )
-@modal.web_server(port=PORT)
+@modal.web_server(port=PORT, startup_timeout=900)
 def serve() -> None:
     """
     Run the vLLM OpenAI-compatible server process.
