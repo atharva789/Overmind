@@ -1,3 +1,20 @@
+/**
+ * Purpose: Auto-reconnecting WebSocket client wrapper with typed events.
+ *
+ * High-level behavior: Wraps a WebSocket with exponential back-off
+ * reconnection (1 → 2 → 4 → 10 s cap). Validates all incoming
+ * messages via parseServerMessage and drops invalid ones silently.
+ * Emits typed events: connected, disconnected, reconnecting, message.
+ *
+ * Assumptions:
+ *  - The provided URL is a valid ws:// or wss:// address.
+ *  - Callers call connect() exactly once after registering handlers.
+ *
+ * Invariants:
+ *  - Once disconnect() is called, no reconnect attempts occur.
+ *  - Invalid messages never reach event handlers.
+ *  - send() is a no-op when the socket is not open.
+ */
 import { WebSocket } from "ws";
 import { parseServerMessage } from "../shared/protocol.js";
 import { MAX_RECONNECT_DELAY_MS, RECONNECT_DELAYS_MS } from "../shared/constants.js";

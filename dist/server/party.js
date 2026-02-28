@@ -1,3 +1,22 @@
+/**
+ * Purpose: Manages all mutable state for a single Overmind party.
+ *
+ * High-level behavior: The Party class owns the member map, the FIFO
+ * prompt queue, and all messaging primitives (broadcast / sendTo). It
+ * enforces username uniqueness via suffix resolution and designates the
+ * first member added as the host.
+ *
+ * Assumptions:
+ *  - addMember is always called with a live, OPEN WebSocket.
+ *  - connectionId values are unique across all active parties.
+ *  - submitPrompt is called only for known connectionIds.
+ *
+ * Invariants:
+ *  - Exactly one host per party (first addMember call sets hostId).
+ *  - All usernames within a party are unique.
+ *  - promptQueue is strictly FIFO; no reordering occurs here.
+ *  - Prompt content is never broadcast by this class; callers decide.
+ */
 import { WebSocket } from "ws";
 import { customAlphabet } from "nanoid";
 import { PARTY_CODE_ALPHABET, PARTY_CODE_LENGTH } from "../shared/constants.js";
