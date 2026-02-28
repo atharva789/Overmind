@@ -26,7 +26,7 @@ import {
     OVERMIND_ORCHESTRATOR_URL,
     ErrorCode,
 } from "../shared/constants.js";
-import type { EvaluationResult } from "./greenlight/evaluate.js";
+import type { EvaluationResult } from "../shared/protocol.js";
 import { Orchestrator, type ExecutionEvent } from "./orchestrator/index.js";
 import { initDb, pool } from "./db.js";
 import { checkAndRunStoryAgent } from "./story/agent.js";
@@ -53,7 +53,6 @@ const pendingExecutions: Map<string, PendingExecution[]> = new Map();
 
 let maxMembers = MAX_MEMBERS_DEFAULT;
 let executionBackendAvailable = false;
-let greenlightAvailable = computeGreenlightAvailable();
 let bridgeProcess: ChildProcess | null = null;
 let bridgeHealthTimer: NodeJS.Timeout | null = null;
 
@@ -80,17 +79,6 @@ function log(msg: string, partyCode?: string): void {
     const ts = new Date().toISOString();
     const prefix = partyCode ? `[${ts}] [${partyCode}]` : `[${ts}]`;
     console.log(`${prefix} ${msg}`);
-}
-
-/**
- * Determine whether the greenlight backend is configured.
- * Does not validate credentials; only checks env presence.
- * Edge case: Both backends missing returns false.
- */
-function computeGreenlightAvailable(): boolean {
-    const hasGemini = Boolean(process.env["GEMINI_API_KEY"]);
-    const hasGlm = Boolean(process.env["MODAL_GREENLIGHT_URL"]);
-    return hasGemini || hasGlm;
 }
 
 /**
@@ -148,7 +136,6 @@ function sendSystemStatus(party: Party, connectionId: string): void {
     party.sendTo(connectionId, {
         type: "system-status",
         payload: {
-            greenlightAvailable,
             executionBackendAvailable:
                 executionBackendAvailable || isLocalMode(),
         },
@@ -164,7 +151,6 @@ function broadcastSystemStatus(): void {
         party.broadcast({
             type: "system-status",
             payload: {
-                greenlightAvailable,
                 executionBackendAvailable:
                     executionBackendAvailable || isLocalMode(),
             },
@@ -290,7 +276,6 @@ export function reserveParty(hostUsername: string): string {
  */
 export function startServer(): WebSocketServer {
     const port = Number(process.env["OVERMIND_PORT"]) || DEFAULT_PORT;
-    greenlightAvailable = computeGreenlightAvailable();
     void initBridge();
 
     initDb()
@@ -708,7 +693,7 @@ export function startServer(): WebSocketServer {
                 const projectId = basename(projectRoot);
 
                 // Insert into DB
-                const insertRes = await pool.query(
+                const insertRes: any = await pool.query(
                     "INSERT INTO queries (project_id, content, username) VALUES ($1, $2, $3) RETURNING id",
                     [projectId, entry.content, entry.username]
                 );

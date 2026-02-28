@@ -8,7 +8,7 @@
 import fs from "node:fs";
 import { nanoid } from "nanoid";
 import type { PromptEntry } from "../party.js";
-import type { EvaluationResult } from "../greenlight/evaluate.js";
+import type { EvaluationResult } from "../../shared/protocol.js";
 import {
     ALWAYS_SYNC_PATTERNS,
     LOCK_RETRY_DELAY_MS,

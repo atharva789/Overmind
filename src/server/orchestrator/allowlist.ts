@@ -5,7 +5,7 @@
  * Invariants: Matching is deterministic and path-normalized.
  */
 
-import type { EvaluationResult } from "../greenlight/evaluate.js";
+import type { EvaluationResult } from "../../shared/protocol.js";
 
 /**
  * Normalize a relative path for consistent matching.
@@ -68,6 +68,12 @@ export function buildAllowedPathChecker(
 
     return (relPath: string) => {
         const normalized = normalizeRelativePath(relPath);
+
+        // Fallback: If Story agent is used (no affectedFiles) and no strict allowlist is set, allow to maintain core functionality.
+        if (allowedPaths.size === 0 && normalizedAllowlist.length === 0) {
+            return true;
+        }
+
         if (allowedPaths.has(normalized)) return true;
         return normalizedAllowlist.some((pattern) =>
             matchesAllowlistPattern(normalized, pattern)

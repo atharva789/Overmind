@@ -1,44 +1,77 @@
-import pg from "pg";
+import Database from "better-sqlite3";
+import fs from "node:fs";
+import path from "node:path";
 
-const { Pool } = pg;
+const OVERMIND_DIR = path.join(process.cwd(), ".overmind");
+if (!fs.existsSync(OVERMIND_DIR)) {
+    fs.mkdirSync(OVERMIND_DIR, { recursive: true });
+}
 
-// We use the OVERMIND_DATABASE_URL or OVERMIND_SUPABASE_DB environment variable if provided,
-// otherwise default to a local standard postgres url.
-const connectionString = process.env.OVERMIND_DATABASE_URL || process.env.OVERMIND_SUPABASE_DB || "postgresql://postgres:postgres@localhost:5432/overmind";
+// Default to a local SQLite database for easy testing
+const dbPath = process.env.OVERMIND_DATABASE_URL || path.join(OVERMIND_DIR, "story.db");
+const db = new Database(dbPath);
 
-export const dbOptions = {
-    connectionString,
+db.pragma("journal_mode = WAL");
+
+// Shim the pool interface to minimize changes in other files
+export const pool = {
+    query: async (text: string, params: any[] = []) => {
+        // Convert $1, $2 to ? for sqlite
+        const sqliteText = text.replace(/\$\d+/g, "?").replace(/RETURNING id/i, "");
+        const stmt = db.prepare(sqliteText);
+
+        if (sqliteText.trim().toUpperCase().startsWith("SELECT")) {
+            return { rows: stmt.all(...params) };
+        } else {
+            const info = stmt.run(...params);
+
+            // If it was an INSERT that had RETURNING id, simulate it
+            if (text.match(/RETURNING id/i)) {
+                // Return the last inserted row id, disguised as a string UUID if needed
+                // Note: Better-sqlite3 returns numeric IDs for AUTOINCREMENT. We used UUIDs below.
+                if (text.includes("features")) {
+                    const row: any = db.prepare("SELECT id FROM features WHERE rowid = ?").get(info.lastInsertRowid);
+                    return { rows: [{ id: row?.id }] };
+                } else if (text.includes("queries")) {
+                    const row: any = db.prepare("SELECT id FROM queries WHERE rowid = ?").get(info.lastInsertRowid);
+                    return { rows: [{ id: row?.id }] };
+                }
+            }
+            return { rows: [] };
+        }
+    },
+    connect: async () => ({
+        query: pool.query,
+        release: () => { },
+    }),
 };
 
-export const pool = new Pool(dbOptions);
-
 export async function initDb() {
-    const client = await pool.connect();
     try {
-        await client.query(`
+        db.exec(`
             CREATE TABLE IF NOT EXISTS features (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
                 title TEXT NOT NULL,
                 description TEXT NOT NULL,
-                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                project_id TEXT
             );
         `);
 
-        await client.query(`
+        db.exec(`
             CREATE TABLE IF NOT EXISTS queries (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
                 content TEXT NOT NULL,
                 username TEXT NOT NULL,
-                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                feature_id UUID REFERENCES features(id) ON DELETE SET NULL
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                feature_id TEXT REFERENCES features(id) ON DELETE SET NULL,
+                project_id TEXT
             );
         `);
 
-        console.log("[db] PostgreSQL schema initialized successfully.");
+        console.log("[db] SQLite schema initialized successfully.");
     } catch (err) {
         console.error("[db] Failed to initialize schema:", err);
         throw err;
-    } finally {
-        client.release();
     }
 }

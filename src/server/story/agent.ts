@@ -50,7 +50,7 @@ export async function checkAndRunStoryAgent(projectRoot: string) {
         const { rows: unclustered } = await pool.query(
             "SELECT id, content, username, created_at FROM queries WHERE feature_id IS NULL AND project_id = $1 ORDER BY created_at ASC",
             [projectId]
-        );
+        ) as { rows: any[] };
 
         if (unclustered.length > 0) {
             console.log(`[story-agent] Processing ${unclustered.length} unclustered queries...`);
@@ -123,7 +123,7 @@ async function evaluateAndClusterQuery(ai: GoogleGenAI, model: string, projectRo
     const { rows: features } = await pool.query(
         "SELECT id, title, description FROM features WHERE project_id = $1 ORDER BY created_at DESC LIMIT $2",
         [projectId, ACTIVE_FEATURES_LIMIT]
-    );
+    ) as { rows: any[] };
 
     const featuresList = features.map(f => `Feature ID: ${f.id} | Title: ${f.title}\nDescription: ${f.description}`).join("\n\n");
 
@@ -178,8 +178,6 @@ Prompt: ${query.content}
 
     const client = await pool.connect();
     try {
-        await client.query("BEGIN");
-
         if (decision.action === "assign_existing" && decision.feature_id) {
             // Verify feature actually exists just in case hallucination
             const check = await client.query("SELECT id FROM features WHERE id = $1", [decision.feature_id]);
@@ -192,7 +190,7 @@ Prompt: ${query.content}
             }
         }
         else if (decision.action === "create_new" && decision.title && decision.description) {
-            const insertRes = await client.query(
+            const insertRes: any = await client.query(
                 "INSERT INTO features (project_id, title, description) VALUES ($1, $2, $3) RETURNING id",
                 [projectId, decision.title, decision.description]
             );
@@ -203,10 +201,7 @@ Prompt: ${query.content}
         } else {
             console.log(`[story-agent] Invalid decision format from Gemini:`, decision);
         }
-
-        await client.query("COMMIT");
     } catch (e) {
-        await client.query("ROLLBACK");
         console.error(`[story-agent] Transaction failed for query ${query.id}:`, e);
         return;
     } finally {
@@ -226,7 +221,7 @@ export async function regenerateStoryMarkdown(projectRoot: string, projectId: st
     const { rows: features } = await pool.query(
         "SELECT id, title, description, created_at FROM features WHERE project_id = $1 ORDER BY created_at ASC",
         [projectId]
-    );
+    ) as { rows: any[] };
 
     if (features.length === 0) return;
 

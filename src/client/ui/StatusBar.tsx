@@ -5,7 +5,6 @@ interface StatusBarProps {
     partyCode: string;
     memberCount: number;
     connectionStatus: "connected" | "reconnecting" | "disconnected";
-    greenlightAvailable?: boolean;
     executionBackendAvailable?: boolean;
     inviteCode?: string;
 }
@@ -14,7 +13,6 @@ export default function StatusBar({
     partyCode,
     memberCount,
     connectionStatus,
-    greenlightAvailable = true,
     executionBackendAvailable = true,
     inviteCode,
 }: StatusBarProps): React.ReactElement {
@@ -37,7 +35,6 @@ export default function StatusBar({
                 : "Disconnected";
 
     const warnings: string[] = [];
-    if (!greenlightAvailable) warnings.push("⚠ Greenlight unavailable");
     if (!executionBackendAvailable) warnings.push("⚠ Execution offline");
 
     const inviteLabel = inviteCode ? `Invite: ${inviteCode} · ` : "";

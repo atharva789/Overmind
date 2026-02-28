@@ -38,7 +38,7 @@ program
     const projectId = basename(projectRoot);
     // --- Core Features Setup Wizard ---
     try {
-        const { rows } = await pool.query("SELECT COUNT(*) as count FROM features WHERE project_id = $1", [projectId]);
+        const { rows } = (await pool.query("SELECT COUNT(*) as count FROM features WHERE project_id = $1", [projectId]));
         if (rows[0].count === "0" && isTTY) {
             const apiKey = process.env["GEMINI_API_KEY"];
             if (apiKey) {

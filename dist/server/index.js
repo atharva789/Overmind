@@ -26,7 +26,6 @@ const pendingEvaluations = new Map();
 const pendingExecutions = new Map();
 let maxMembers = MAX_MEMBERS_DEFAULT;
 let executionBackendAvailable = false;
-let greenlightAvailable = computeGreenlightAvailable();
 let bridgeProcess = null;
 let bridgeHealthTimer = null;
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
@@ -42,16 +41,6 @@ function log(msg, partyCode) {
     const ts = new Date().toISOString();
     const prefix = partyCode ? `[${ts}] [${partyCode}]` : `[${ts}]`;
     console.log(`${prefix} ${msg}`);
-}
-/**
- * Determine whether the greenlight backend is configured.
- * Does not validate credentials; only checks env presence.
- * Edge case: Both backends missing returns false.
- */
-function computeGreenlightAvailable() {
-    const hasGemini = Boolean(process.env["GEMINI_API_KEY"]);
-    const hasGlm = Boolean(process.env["MODAL_GREENLIGHT_URL"]);
-    return hasGemini || hasGlm;
 }
 /**
  * Decide whether execution should run locally or via Modal.
@@ -104,7 +93,6 @@ function sendSystemStatus(party, connectionId) {
     party.sendTo(connectionId, {
         type: "system-status",
         payload: {
-            greenlightAvailable,
             executionBackendAvailable: executionBackendAvailable || isLocalMode(),
         },
     });
@@ -118,7 +106,6 @@ function broadcastSystemStatus() {
         party.broadcast({
             type: "system-status",
             payload: {
-                greenlightAvailable,
                 executionBackendAvailable: executionBackendAvailable || isLocalMode(),
             },
         });
@@ -228,7 +215,6 @@ export function reserveParty(hostUsername) {
  */
 export function startServer() {
     const port = Number(process.env["OVERMIND_PORT"]) || DEFAULT_PORT;
-    greenlightAvailable = computeGreenlightAvailable();
     void initBridge();
     initDb()
         .then(() => {
