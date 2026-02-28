@@ -26,3 +26,5 @@ export declare const MAX_FILE_READ_LINES = 500;
 export declare const MAX_SEARCH_RESULTS = 50;
 export declare const LOG_TRUNCATE_CHARS = 200;
 export declare const MAX_CONTEXT_PAYLOAD_CHARS = 20000;
+export declare const LOCK_TIMEOUT_MS: number;
+export declare const ALWAYS_SYNC_PATTERNS: string[];

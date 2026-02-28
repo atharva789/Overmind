@@ -29,4 +29,7 @@ export const MAX_FILE_READ_LINES = 500;
 export const MAX_SEARCH_RESULTS = 50;
 export const LOG_TRUNCATE_CHARS = 200;
 export const MAX_CONTEXT_PAYLOAD_CHARS = 20000;
+// ─── Orchestrator ───
+export const LOCK_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes for remote execution
+export const ALWAYS_SYNC_PATTERNS = (process.env["OVERMIND_ALWAYS_SYNC"] ?? "context.md,package.json,tsconfig.json").split(",");
 //# sourceMappingURL=constants.js.map

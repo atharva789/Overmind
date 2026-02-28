@@ -3,7 +3,8 @@ import { customAlphabet } from "nanoid";
 import { Party } from "./party.js";
 import { parseClientMessage } from "../shared/protocol.js";
 import { DEFAULT_PORT, JOIN_TIMEOUT_MS, CONNECTION_ID_LENGTH, PARTY_CODE_ALPHABET, PARTY_CODE_LENGTH, MAX_MEMBERS_DEFAULT, ErrorCode, } from "../shared/constants.js";
-import { evaluatePrompt } from "./greenlight/agent.js";
+import { evaluatePrompt, greenlightLog } from "./greenlight/agent.js";
+import { executePromptChanges } from "./execution/agent.js";
 const generateConnectionId = customAlphabet("abcdefghijklmnopqrstuvwxyz0123456789", CONNECTION_ID_LENGTH);
 const generatePartyCode = customAlphabet(PARTY_CODE_ALPHABET, PARTY_CODE_LENGTH);
 // ─── State ───
@@ -355,95 +356,71 @@ export function startServer() {
         });
         evalQueues.set(partyCode, next);
     }
-    // ─── Sequential execution queue per party (Phase 4 simulation) ───
+    // ─── Sequential execution queue per party (Phase 5 real execution) ───
     function enqueueExecution(party, connectionId, entry) {
         const partyCode = party.code;
         const prev = execQueues.get(partyCode) ?? Promise.resolve();
         const next = prev.then(async () => {
             if (!parties.has(partyCode))
                 return;
-            const stages = [
-                { stage: "Acquiring file locks...", delay: 300 },
-                { stage: "Syncing project files to sandbox...", delay: 1000 },
-                { stage: "Spawning sandbox...", delay: 1000 },
-                { stage: "Agent is working...", delay: 2000 },
-                { stage: "Extracting changes...", delay: 500 },
-                { stage: "Applying changes to codebase...", delay: 500 },
-            ];
             // Send execution-queued
             party.sendTo(connectionId, {
                 type: "execution-queued",
-                payload: { promptId: entry.promptId, reason: "Waiting for sandbox slot..." },
+                payload: { promptId: entry.promptId, reason: "Waiting for execution agent slot..." },
             });
             await sleep(300);
-            // Send each stage
-            for (const { stage, delay } of stages) {
-                if (!parties.has(partyCode))
-                    return;
-                party.sendTo(connectionId, {
-                    type: "execution-update",
-                    payload: { promptId: entry.promptId, stage },
-                });
-                party.broadcast({
-                    type: "member-execution-update",
-                    payload: { username: entry.username, promptId: entry.promptId, stage },
-                });
-                await sleep(delay);
-            }
             if (!parties.has(partyCode))
                 return;
-            // Send execution-complete with mock diffs
             party.sendTo(connectionId, {
-                type: "execution-complete",
-                payload: {
-                    promptId: entry.promptId,
-                    files: [
-                        {
-                            path: "src/utils/format.ts",
-                            diff: `--- a/src/utils/format.ts\n+++ b/src/utils/format.ts\n@@ -1,3 +1,15 @@\n+import { StringFormatter } from './types.js';\n+\n+export function formatString(input: string): string {\n+    return input.trim().toLowerCase();\n+}\n+\n+export function capitalize(input: string): string {\n+    return input.charAt(0).toUpperCase() + input.slice(1);\n+}\n+\n+export function truncate(input: string, maxLen: number): string {\n+    return input.length > maxLen ? input.slice(0, maxLen) + '…' : input;\n+}`,
-                            linesAdded: 15,
-                            linesRemoved: 0,
-                        },
-                        {
-                            path: "src/utils/index.ts",
-                            diff: `--- a/src/utils/index.ts\n+++ b/src/utils/index.ts\n@@ -1,2 +1,3 @@\n export * from './helpers.js';\n+export * from './format.js';\n`,
-                            linesAdded: 1,
-                            linesRemoved: 0,
-                        },
-                    ],
-                    summary: "Applied 2 files (+16/-0).",
-                },
+                type: "execution-update",
+                payload: { promptId: entry.promptId, stage: "Agent is working..." },
             });
             party.broadcast({
-                type: "member-execution-complete",
-                payload: {
-                    username: entry.username,
-                    promptId: entry.promptId,
-                    files: [
-                        {
-                            path: "src/utils/format.ts",
-                            diff: `--- a/src/utils/format.ts\n+++ b/src/utils/format.ts\n@@ -1,3 +1,15 @@\n+import { StringFormatter } from './types.js';\n+\n+export function formatString(input: string): string {\n+    return input.trim().toLowerCase();\n+}\n+\n+export function capitalize(input: string): string {\n+    return input.charAt(0).toUpperCase() + input.slice(1);\n+}\n+\n+export function truncate(input: string, maxLen: number): string {\n+    return input.length > maxLen ? input.slice(0, maxLen) + '…' : input;\n+}`,
-                            linesAdded: 15,
-                            linesRemoved: 0,
-                        },
-                        {
-                            path: "src/utils/index.ts",
-                            diff: `--- a/src/utils/index.ts\n+++ b/src/utils/index.ts\n@@ -1,2 +1,3 @@\n export * from './helpers.js';\n+export * from './format.js';\n`,
-                            linesAdded: 1,
-                            linesRemoved: 0,
-                        },
-                    ],
-                    summary: "Applied 2 files (+16/-0).",
-                },
+                type: "member-execution-update",
+                payload: { username: entry.username, promptId: entry.promptId, stage: "Agent is working..." },
             });
-            party.broadcast({
-                type: "activity",
-                payload: {
-                    username: entry.username,
-                    event: "'s changes were applied (2 files, +16/-0)",
-                    timestamp: Date.now(),
-                },
-            });
+            // Call real execution agent
+            const result = await executePromptChanges(entry, partyCode, greenlightLog);
+            if (!parties.has(partyCode))
+                return;
+            if (result.success) {
+                const totalAdded = result.files.reduce((sum, f) => sum + f.linesAdded, 0);
+                const totalRemoved = result.files.reduce((sum, f) => sum + f.linesRemoved, 0);
+                const summaryMsg = `Applied ${result.files.length} files (+${totalAdded}/-${totalRemoved}).`;
+                // Send execution-complete with real diffs
+                party.sendTo(connectionId, {
+                    type: "execution-complete",
+                    payload: {
+                        promptId: entry.promptId,
+                        files: result.files,
+                        summary: summaryMsg,
+                    },
+                });
+                party.broadcast({
+                    type: "member-execution-complete",
+                    payload: {
+                        username: entry.username,
+                        promptId: entry.promptId,
+                        files: result.files,
+                        summary: summaryMsg,
+                    },
+                });
+                party.broadcast({
+                    type: "activity",
+                    payload: {
+                        username: entry.username,
+                        event: `'s changes were applied (${result.files.length} files, +${totalAdded}/-${totalRemoved})`,
+                        timestamp: Date.now(),
+                    },
+                });
+            }
+            else {
+                party.sendTo(connectionId, {
+                    type: "error",
+                    // Use INVALID_MESSAGE code or something similar
+                    payload: { message: `Execution failed: ${result.summary}`, code: ErrorCode.INVALID_MESSAGE },
+                });
+            }
             party.broadcast({
                 type: "member-status",
                 payload: { username: entry.username, status: "idle" },
