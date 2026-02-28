@@ -20,7 +20,7 @@ from pydantic import BaseModel, ValidationError
 
 APP_NAME = "overmind-orchestrator"
 RUN_STORE_NAME = "overmind-orchestrator-runs"
-DEFAULT_LLM_URL = "https://mercanmeh123--overmind-llm-serve.modal.run"
+DEFAULT_LLM_URL = "https://mercanmeh123--overmind-llm-llmserver-serve.modal.run"
 MODEL_ID = os.environ.get("MODEL_ID", "openai/gpt-oss-20b")
 LLM_URL = os.environ.get("OVERMIND_LLM_URL", DEFAULT_LLM_URL).rstrip("/")
 LLM_TIMEOUT_S = int(os.environ.get("OVERMIND_LLM_TIMEOUT_S", "3600"))

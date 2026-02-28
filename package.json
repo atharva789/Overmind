@@ -3,12 +3,13 @@
   "version": "0.1.0",
   "type": "module",
   "bin": {
-    "overmind": "dist/cli.js"
+    "overmind": "dist/boot.js",
+    "overmind-deploy": "tools/modal-deploy.sh"
   },
   "scripts": {
     "build": "tsc",
     "dev": "tsx --watch src/cli.ts",
-    "start": "node dist/cli.js"
+    "start": "node dist/boot.js"
   },
   "dependencies": {
     "@clack/prompts": "^1.0.1",
