@@ -1,4 +1,19 @@
 #!/usr/bin/env node
+/**
+ * Purpose: CLI entry point for the `overmind` command.
+ *
+ * High-level behavior: Provides `host` and `join` sub-commands via
+ * commander. In TTY mode renders the Ink UI; in non-TTY (headless)
+ * mode falls back to Phase 1 console logging behavior.
+ *
+ * Assumptions:
+ *  - The server is always local (127.0.0.1) for this build.
+ *  - OVERMIND_PORT env var or --port flag sets the port.
+ *
+ * Invariants:
+ *  - headless mode always produces observable console output.
+ *  - TTY mode never starts an Ink app with an unstarted session.
+ */
 import os from "os";
 import { program } from "commander";
 import { startOvermindServer } from "./server/index.js";

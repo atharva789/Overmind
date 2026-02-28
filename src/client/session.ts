@@ -1,3 +1,22 @@
+/**
+ * Purpose: High-level client session — wraps Connection with join
+ * flow and optional headless console logging.
+ *
+ * High-level behavior: On connect, immediately sends a `join` message.
+ * In headless mode (silent: false), logs all server messages to the
+ * console and auto-stops on fatal errors. In silent mode (silent: true),
+ * only the join flow runs; the UI layer subscribes to events directly
+ * via the exposed `connection` property.
+ *
+ * Assumptions:
+ *  - start() is called exactly once per Session instance.
+ *  - In silent mode, all display is handled by the Ink UI layer.
+ *
+ * Invariants:
+ *  - Join message is always sent on connect and reconnect.
+ *  - In headless mode, PARTY_ENDED / PARTY_NOT_FOUND stop the session.
+ */
+
 import { Connection } from "./connection.js";
 import type { ServerMessage, ClientMessage } from "../shared/protocol.js";
 

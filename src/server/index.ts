@@ -1,3 +1,23 @@
+/**
+ * Purpose: Overmind WebSocket server — connection lifecycle and message
+ * routing for all party members.
+ *
+ * High-level behavior: Starts a WebSocket server on the configured
+ * port. Incoming connections must send a `join` message within 5 s or
+ * they are disconnected. After joining, messages are dispatched to
+ * handleAuthedMessage. The `reserveParty` function allows the CLI host
+ * command to create a party code before any socket connects.
+ *
+ * Assumptions:
+ *  - Only one server instance runs per process.
+ *  - OVERMIND_PORT env var or the port argument sets the listen port.
+ *
+ * Invariants:
+ *  - Prompt content is never broadcast to non-host members.
+ *  - Host disconnect triggers PARTY_ENDED for all members.
+ *  - Every connectionId is nanoid(12) — globally unique.
+ */
+
 import { WebSocketServer, WebSocket } from "ws";
 import { nanoid } from "nanoid";
 import { Party } from "./party.js";
