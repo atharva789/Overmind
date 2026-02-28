@@ -467,6 +467,9 @@ export function startServer(): WebSocketServer {
         const next = prev.then(async () => {
             if (!parties.has(partyCode)) return;
 
+            // Let the greenlight verdict UI linger for 1.2 seconds
+            await sleep(1200);
+
             // Send execution-queued
             party.sendTo(connectionId, {
                 type: "execution-queued",
