@@ -1,5 +1,13 @@
+/**
+ * Purpose: Start and manage the WebSocket server and party lifecycle.
+ * High-level behavior: Handles joins, prompt evaluation, and execution.
+ * Assumptions: startServer is called by the host CLI process.
+ * Invariants: Prompt content is never broadcast to non-host members.
+ */
+
 import { WebSocketServer, WebSocket } from "ws";
 import { customAlphabet } from "nanoid";
+import { spawn, type ChildProcess } from "node:child_process";
 import { Party } from "./party.js";
 import type { PromptEntry } from "./party.js";
 import { parseClientMessage } from "../shared/protocol.js";
@@ -11,27 +19,50 @@ import {
     PARTY_CODE_ALPHABET,
     PARTY_CODE_LENGTH,
     MAX_MEMBERS_DEFAULT,
+    MODAL_BRIDGE_URL,
+    MODAL_BRIDGE_PORT,
+    BRIDGE_HEALTH_INTERVAL_MS,
     ErrorCode,
 } from "../shared/constants.js";
-import { evaluatePrompt, greenlightLog } from "./greenlight/agent.js";
-import { executePromptChanges } from "./execution/agent.js";
+import { evaluatePrompt } from "./greenlight/agent.js";
+import type { EvaluationResult } from "./greenlight/evaluate.js";
+import { Orchestrator, type ExecutionEvent } from "./orchestrator/index.js";
 
 const generateConnectionId = customAlphabet(
     "abcdefghijklmnopqrstuvwxyz0123456789",
     CONNECTION_ID_LENGTH
 );
 
-const generatePartyCode = customAlphabet(PARTY_CODE_ALPHABET, PARTY_CODE_LENGTH);
+const generatePartyCode = customAlphabet(
+    PARTY_CODE_ALPHABET,
+    PARTY_CODE_LENGTH
+);
 
 // ─── State ───
 
+const PROJECT_ROOT = process.cwd();
 const parties: Map<string, Party> = new Map();
 const evalQueues: Map<string, Promise<void>> = new Map();
-const execQueues: Map<string, Promise<void>> = new Map();
 const pendingParties: Map<string, string> = new Map();
+const orchestrators: Map<string, Orchestrator> = new Map();
+const pendingEvaluations: Map<string, EvaluationResult> = new Map();
+const pendingExecutions: Map<string, PendingExecution[]> = new Map();
 
 let maxMembers = MAX_MEMBERS_DEFAULT;
+let executionBackendAvailable = false;
+let greenlightAvailable = computeGreenlightAvailable();
+let bridgeProcess: ChildProcess | null = null;
+let bridgeHealthTimer: NodeJS.Timeout | null = null;
 
+interface PendingExecution {
+    entry: PromptEntry;
+    evaluation: EvaluationResult;
+}
+
+/**
+ * Configure the max members allowed per party.
+ * Does not retroactively remove existing members.
+ */
 export function setMaxMembers(n: number): void {
     maxMembers = n;
 }
@@ -42,6 +73,138 @@ function log(msg: string, partyCode?: string): void {
     const ts = new Date().toISOString();
     const prefix = partyCode ? `[${ts}] [${partyCode}]` : `[${ts}]`;
     console.log(`${prefix} ${msg}`);
+}
+
+/**
+ * Determine whether the greenlight backend is configured.
+ * Does not validate credentials; only checks env presence.
+ * Edge case: Both backends missing returns false.
+ */
+function computeGreenlightAvailable(): boolean {
+    const hasGemini = Boolean(process.env["GEMINI_API_KEY"]);
+    const hasGlm = Boolean(process.env["MODAL_GREENLIGHT_URL"]);
+    return hasGemini || hasGlm;
+}
+
+/**
+ * Decide whether execution should run locally or via Modal.
+ * Does not verify that the local agent command exists.
+ */
+function isLocalMode(): boolean {
+    return process.env["OVERMIND_LOCAL"] === "1";
+}
+
+/**
+ * Update execution backend availability and broadcast to members.
+ * Does not perform any health checks itself.
+ */
+function setExecutionBackendAvailable(value: boolean): void {
+    if (executionBackendAvailable === value) return;
+    executionBackendAvailable = value;
+    broadcastSystemStatus();
+
+    if (executionBackendAvailable) {
+        drainPendingExecutions();
+    }
+}
+
+/**
+ * Send system availability status to a single member.
+ * Does not alter server state.
+ */
+function sendSystemStatus(party: Party, connectionId: string): void {
+    party.sendTo(connectionId, {
+        type: "system-status",
+        payload: {
+            greenlightAvailable,
+            executionBackendAvailable:
+                executionBackendAvailable || isLocalMode(),
+        },
+    });
+}
+
+/**
+ * Broadcast system availability status to all members.
+ * Does not mutate party membership.
+ */
+function broadcastSystemStatus(): void {
+    for (const [, party] of parties) {
+        party.broadcast({
+            type: "system-status",
+            payload: {
+                greenlightAvailable,
+                executionBackendAvailable:
+                    executionBackendAvailable || isLocalMode(),
+            },
+        });
+    }
+}
+
+/**
+ * Start the Modal bridge process and health checks if needed.
+ * Does not throw; failures mark execution backend unavailable.
+ */
+async function initBridge(): Promise<void> {
+    if (isLocalMode()) {
+        setExecutionBackendAvailable(true);
+        return;
+    }
+
+    spawnBridgeProcess();
+    await checkBridgeHealth();
+
+    if (bridgeHealthTimer) {
+        clearInterval(bridgeHealthTimer);
+    }
+
+    bridgeHealthTimer = setInterval(() => {
+        void checkBridgeHealth();
+    }, BRIDGE_HEALTH_INTERVAL_MS);
+}
+
+/**
+ * Spawn the Modal bridge as a child process.
+ * Does not guarantee the process is healthy.
+ */
+function spawnBridgeProcess(): void {
+    if (bridgeProcess) return;
+
+    bridgeProcess = spawn(
+        "python",
+        ["-m", "uvicorn", "bridge:app", "--port", String(MODAL_BRIDGE_PORT)],
+        {
+            cwd: "modal-bridge",
+            env: { ...process.env },
+            stdio: "ignore",
+        }
+    );
+
+    bridgeProcess.on("error", (err: Error) => {
+        log(`Bridge process error: ${err.message}`);
+        setExecutionBackendAvailable(false);
+    });
+
+    bridgeProcess.on("exit", (code) => {
+        log(`Bridge process exited (${code ?? "?"})`);
+        bridgeProcess = null;
+        setExecutionBackendAvailable(false);
+    });
+}
+
+/**
+ * Check bridge health endpoint and update execution availability.
+ * Does not throw; failures mark execution backend unavailable.
+ */
+async function checkBridgeHealth(): Promise<void> {
+    try {
+        const res = await fetch(`${MODAL_BRIDGE_URL}/health`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = (await res.json()) as { modal_connected?: boolean };
+        setExecutionBackendAvailable(Boolean(data.modal_connected));
+    } catch (err) {
+        log(`Bridge health check failed: ${String(err)}`);
+        setExecutionBackendAvailable(false);
+    }
 }
 
 // ─── Public API ───
@@ -55,8 +218,14 @@ export function reserveParty(hostUsername: string): string {
 
 // ─── Server ───
 
+/**
+ * Start the WebSocket server and initialize bridge checks.
+ * Does not block on bridge health; runs asynchronously.
+ */
 export function startServer(): WebSocketServer {
     const port = Number(process.env["OVERMIND_PORT"]) || DEFAULT_PORT;
+    greenlightAvailable = computeGreenlightAvailable();
+    void initBridge();
 
     const wss = new WebSocketServer({ port, host: "0.0.0.0" }, () => {
         log(`Overmind server listening on port ${port} (0.0.0.0)`);
@@ -71,7 +240,10 @@ export function startServer(): WebSocketServer {
             if (!joined) {
                 sendRaw(ws, {
                     type: "error",
-                    payload: { message: "Join timeout", code: ErrorCode.JOIN_TIMEOUT },
+                    payload: {
+                        message: "Join timeout",
+                        code: ErrorCode.JOIN_TIMEOUT,
+                    },
                 });
                 ws.close();
             }
@@ -85,7 +257,10 @@ export function startServer(): WebSocketServer {
                 log(`Invalid message from ${connectionId}`);
                 sendRaw(ws, {
                     type: "error",
-                    payload: { message: "Invalid message", code: ErrorCode.INVALID_MESSAGE },
+                    payload: {
+                        message: "Invalid message",
+                        code: ErrorCode.INVALID_MESSAGE,
+                    },
                 });
                 return;
             }
@@ -94,7 +269,10 @@ export function startServer(): WebSocketServer {
                 if (msg.type !== "join") {
                     sendRaw(ws, {
                         type: "error",
-                        payload: { message: "Must join first", code: ErrorCode.INVALID_MESSAGE },
+                        payload: {
+                            message: "Must join first",
+                            code: ErrorCode.INVALID_MESSAGE,
+                        },
                     });
                     return;
                 }
@@ -122,6 +300,10 @@ export function startServer(): WebSocketServer {
         });
     });
 
+    /**
+     * Handle an initial join request for a connection.
+     * Does not accept non-join messages before join completes.
+     */
     function handleJoin(
         ws: WebSocket,
         connectionId: string,
@@ -138,6 +320,10 @@ export function startServer(): WebSocketServer {
             const party = new Party(connectionId, ws, username);
             (party as { code: string }).code = partyCode;
             parties.set(partyCode, party);
+            orchestrators.set(
+                partyCode,
+                new Orchestrator(PROJECT_ROOT, MODAL_BRIDGE_URL)
+            );
             log(`${username} created and joined as host`, partyCode);
 
             party.sendTo(connectionId, {
@@ -149,11 +335,7 @@ export function startServer(): WebSocketServer {
                 },
             });
 
-            // Send system status
-            party.sendTo(connectionId, {
-                type: "system-status",
-                payload: { greenlightAvailable: true, executionBackendAvailable: true },
-            });
+            sendSystemStatus(party, connectionId);
 
             onJoined(party);
             return;
@@ -163,7 +345,10 @@ export function startServer(): WebSocketServer {
         if (!party) {
             sendRaw(ws, {
                 type: "error",
-                payload: { message: "Party not found. Check the code and try again.", code: ErrorCode.PARTY_NOT_FOUND },
+                payload: {
+                    message: "Party not found. Check the code and try again.",
+                    code: ErrorCode.PARTY_NOT_FOUND,
+                },
             });
             ws.close();
             return;
@@ -173,7 +358,10 @@ export function startServer(): WebSocketServer {
         if (party.members.size >= maxMembers) {
             sendRaw(ws, {
                 type: "error",
-                payload: { message: `Party is full (${maxMembers}/${maxMembers}).`, code: ErrorCode.PARTY_FULL },
+                payload: {
+                    message: `Party is full (${maxMembers}/${maxMembers}).`,
+                    code: ErrorCode.PARTY_FULL,
+                },
             });
             ws.close();
             return;
@@ -191,11 +379,7 @@ export function startServer(): WebSocketServer {
             },
         });
 
-        // Send system status to new member
-        party.sendTo(connectionId, {
-            type: "system-status",
-            payload: { greenlightAvailable: true, executionBackendAvailable: true },
-        });
+        sendSystemStatus(party, connectionId);
 
         party.broadcast(
             { type: "member-joined", payload: { username: resolvedUsername } },
@@ -204,13 +388,25 @@ export function startServer(): WebSocketServer {
 
         party.broadcast({
             type: "activity",
-            payload: { username: resolvedUsername, event: "joined", timestamp: Date.now() },
+            payload: {
+                username: resolvedUsername,
+                event: "joined",
+                timestamp: Date.now(),
+            },
         });
 
         onJoined(party);
     }
 
-    function handleMessage(party: Party, connectionId: string, msg: ClientMessage): void {
+    /**
+     * Handle a validated client message after join.
+     * Does not process unknown message types.
+     */
+    function handleMessage(
+        party: Party,
+        connectionId: string,
+        msg: ClientMessage
+    ): void {
         switch (msg.type) {
             case "prompt-submit": {
                 const entry = party.submitPrompt(connectionId, msg.payload);
@@ -218,7 +414,10 @@ export function startServer(): WebSocketServer {
 
                 party.sendTo(connectionId, {
                     type: "prompt-queued",
-                    payload: { promptId: entry.promptId, position: entry.position },
+                    payload: {
+                        promptId: entry.promptId,
+                        position: entry.position,
+                    },
                 });
 
                 party.broadcast({
@@ -232,7 +431,10 @@ export function startServer(): WebSocketServer {
 
                 party.broadcast({
                     type: "member-status",
-                    payload: { username: entry.username, status: "awaiting greenlight" },
+                    payload: {
+                        username: entry.username,
+                        status: "awaiting greenlight",
+                    },
                 });
 
                 enqueueEvaluation(party, connectionId, entry);
@@ -243,7 +445,10 @@ export function startServer(): WebSocketServer {
                 if (!party.isHost(connectionId)) {
                     party.sendTo(connectionId, {
                         type: "error",
-                        payload: { message: "Only host can issue verdicts", code: ErrorCode.INVALID_MESSAGE },
+                        payload: {
+                            message: "Only host can issue verdicts",
+                            code: ErrorCode.INVALID_MESSAGE,
+                        },
                     });
                     return;
                 }
@@ -251,18 +456,29 @@ export function startServer(): WebSocketServer {
                 const { promptId, verdict, reason } = msg.payload;
 
                 // Find the submitter connectionId for this prompt
-                const promptEntry = party.promptQueue.find((p) => p.promptId === promptId);
-                const submitterConnId = promptEntry?.connectionId;
+                const promptEntry = party.promptQueue.find(
+                    (p) => p.promptId === promptId
+                );
+                if (!promptEntry) {
+                    party.sendTo(connectionId, {
+                        type: "error",
+                        payload: {
+                            message: "Prompt not found for verdict",
+                            code: ErrorCode.INVALID_MESSAGE,
+                        },
+                    });
+                    return;
+                }
+
+                const submitterConnId = promptEntry.connectionId;
+                const submitterName = promptEntry.username;
 
                 if (verdict === "approve") {
-                    if (submitterConnId) {
-                        party.sendTo(submitterConnId, {
-                            type: "prompt-approved",
-                            payload: { promptId },
-                        });
-                    }
+                    party.sendTo(submitterConnId, {
+                        type: "prompt-approved",
+                        payload: { promptId },
+                    });
 
-                    const submitterName = promptEntry?.username ?? "unknown";
                     party.broadcast({
                         type: "activity",
                         payload: {
@@ -272,23 +488,30 @@ export function startServer(): WebSocketServer {
                         },
                     });
 
-                    // Trigger execution simulation for approved prompt
-                    if (submitterConnId && promptEntry) {
-                        party.broadcast({
-                            type: "member-status",
-                            payload: { username: submitterName, status: "executing" },
-                        });
-                        enqueueExecution(party, submitterConnId, promptEntry);
-                    }
-                } else {
-                    if (submitterConnId) {
-                        party.sendTo(submitterConnId, {
-                            type: "prompt-denied",
-                            payload: { promptId, reason: reason ?? "Denied by host" },
-                        });
-                    }
+                    party.broadcast({
+                        type: "member-status",
+                        payload: {
+                            username: submitterName,
+                            status: "executing",
+                        },
+                    });
 
-                    const submitterName = promptEntry?.username ?? "unknown";
+                    const evaluation = pendingEvaluations.get(promptId)
+                        ?? buildFallbackEvaluation(
+                            promptEntry,
+                            "Approved by host."
+                        );
+                    pendingEvaluations.delete(promptId);
+                    enqueueExecution(party, promptEntry, evaluation);
+                } else {
+                    party.sendTo(submitterConnId, {
+                        type: "prompt-denied",
+                        payload: {
+                            promptId,
+                            reason: reason ?? "Denied by host",
+                        },
+                    });
+
                     party.broadcast({
                         type: "activity",
                         payload: {
@@ -302,6 +525,8 @@ export function startServer(): WebSocketServer {
                         type: "member-status",
                         payload: { username: submitterName, status: "idle" },
                     });
+
+                    pendingEvaluations.delete(promptId);
                 }
                 break;
             }
@@ -313,16 +538,26 @@ export function startServer(): WebSocketServer {
             case "status-update": {
                 const member = party.getMemberByConnectionId(connectionId);
                 if (member) {
-                    party.broadcast({
-                        type: "member-status",
-                        payload: { username: member.username, status: msg.payload.status },
-                    }, connectionId);
+                    party.broadcast(
+                        {
+                            type: "member-status",
+                            payload: {
+                                username: member.username,
+                                status: msg.payload.status,
+                            },
+                        },
+                        connectionId
+                    );
                 }
                 break;
             }
         }
     }
 
+    /**
+     * Handle a websocket disconnection.
+     * Does not throw if the member was never fully joined.
+     */
     function handleDisconnect(party: Party, connectionId: string): void {
         const member = party.getMemberByConnectionId(connectionId);
         if (!member) return;
@@ -337,7 +572,10 @@ export function startServer(): WebSocketServer {
             log("Host disconnected, ending party", party.code);
             party.broadcast({
                 type: "error",
-                payload: { message: "Host left, party ended.", code: ErrorCode.HOST_DISCONNECTED },
+                payload: {
+                    message: "Host left, party ended.",
+                    code: ErrorCode.HOST_DISCONNECTED,
+                },
             });
 
             for (const [, m] of party.members) {
@@ -345,7 +583,15 @@ export function startServer(): WebSocketServer {
             }
             parties.delete(party.code);
             evalQueues.delete(party.code);
-            execQueues.delete(party.code);
+            pendingExecutions.delete(party.code);
+            const orchestrator = orchestrators.get(party.code);
+            if (orchestrator) {
+                void orchestrator.shutdown();
+            }
+            orchestrators.delete(party.code);
+            for (const prompt of party.promptQueue) {
+                pendingEvaluations.delete(prompt.promptId);
+            }
         } else {
             party.broadcast({
                 type: "member-left",
@@ -353,13 +599,21 @@ export function startServer(): WebSocketServer {
             });
             party.broadcast({
                 type: "activity",
-                payload: { username, event: "disconnected", timestamp: Date.now() },
+                payload: {
+                    username,
+                    event: "disconnected",
+                    timestamp: Date.now(),
+                },
             });
         }
     }
 
     // ─── Sequential evaluation queue per party ───
 
+    /**
+     * Queue evaluations sequentially per party.
+     * Does not execute prompts in parallel.
+     */
     function enqueueEvaluation(
         party: Party,
         connectionId: string,
@@ -376,30 +630,40 @@ export function startServer(): WebSocketServer {
                     (p) => p.promptId !== entry.promptId
                 );
 
-                const result = await evaluatePrompt(entry, concurrent, partyCode);
+                const result = await evaluatePrompt(
+                    entry,
+                    concurrent,
+                    partyCode
+                );
                 if (!parties.has(partyCode)) return;
 
                 if (result.verdict === "greenlit") {
                     party.sendTo(connectionId, {
                         type: "prompt-greenlit",
-                        payload: { promptId: entry.promptId, reasoning: result.reasoning },
+                        payload: {
+                            promptId: entry.promptId,
+                            reasoning: result.reasoning,
+                        },
                     });
                     party.broadcast({
                         type: "activity",
                         payload: {
                             username: entry.username,
-                            event: `'s prompt was greenlit ✓`,
+                            event:
+                                `${entry.username}'s prompt was greenlit ✓`,
                             timestamp: Date.now(),
                         },
                     });
 
                     party.broadcast({
                         type: "member-status",
-                        payload: { username: entry.username, status: "executing" },
+                        payload: {
+                            username: entry.username,
+                            status: "executing",
+                        },
                     });
 
-                    // Greenlit → auto-trigger execution simulation
-                    enqueueExecution(party, connectionId, entry);
+                    enqueueExecution(party, entry, result);
                 } else {
                     party.sendTo(connectionId, {
                         type: "prompt-redlit",
@@ -413,15 +677,22 @@ export function startServer(): WebSocketServer {
                         type: "activity",
                         payload: {
                             username: entry.username,
-                            event: `'s prompt was redlit, awaiting host review ⚠`,
+                            event:
+                                `${entry.username}'s prompt was redlit, `
+                                + "awaiting host review ⚠",
                             timestamp: Date.now(),
                         },
                     });
 
                     party.broadcast({
                         type: "member-status",
-                        payload: { username: entry.username, status: "awaiting review" },
+                        payload: {
+                            username: entry.username,
+                            status: "awaiting review",
+                        },
                     });
+
+                    pendingEvaluations.set(entry.promptId, result);
 
                     // Send host-review-request with reasoning
                     party.sendTo(party.hostId, {
@@ -436,101 +707,270 @@ export function startServer(): WebSocketServer {
                     });
                 }
             } catch (err) {
-                log(`Evaluation error: ${err instanceof Error ? err.message : String(err)}`, partyCode);
+                log(
+                    `Evaluation error: ${
+                        err instanceof Error ? err.message : String(err)
+                    }`,
+                    partyCode
+                );
             }
         });
 
         evalQueues.set(partyCode, next);
     }
 
-    // ─── Sequential execution queue per party (Phase 5 real execution) ───
+    return wss;
+}
 
-    function enqueueExecution(
-        party: Party,
-        connectionId: string,
-        entry: PromptEntry
-    ): void {
-        const partyCode = party.code;
-        const prev = execQueues.get(partyCode) ?? Promise.resolve();
+/**
+ * Build a minimal evaluation result when host approves without metadata.
+ * Does not infer affected files beyond explicit scope hints.
+ */
+function buildFallbackEvaluation(
+    entry: PromptEntry,
+    reason: string
+): EvaluationResult {
+    return {
+        verdict: "greenlit",
+        reasoning: reason,
+        conflicts: [],
+        affectedFiles: entry.scope ?? [],
+        executionHints: {
+            estimatedComplexity: "simple",
+            requiresBuild: false,
+            requiresTests: false,
+            relatedContextFiles: [],
+        },
+    };
+}
 
-        const next = prev.then(async () => {
-            if (!parties.has(partyCode)) return;
+/**
+ * Queue or start execution for a prompt.
+ * Does not block; execution runs asynchronously.
+ */
+function enqueueExecution(
+    party: Party,
+    entry: PromptEntry,
+    evaluation: EvaluationResult
+): void {
+    sendExecutionQueued(
+        party,
+        entry.connectionId,
+        entry.promptId,
+        "Waiting for execution slot..."
+    );
 
-            // Send execution-queued
-            party.sendTo(connectionId, {
-                type: "execution-queued",
-                payload: { promptId: entry.promptId, reason: "Waiting for execution agent slot..." },
-            });
+    if (!executionBackendAvailable && !isLocalMode()) {
+        queuePendingExecution(party.code, entry, evaluation);
+        return;
+    }
 
-            await sleep(300);
+    void runExecutionFlow(party, entry, evaluation);
+}
 
-            if (!parties.has(partyCode)) return;
+/**
+ * Store a prompt for later execution when the backend is offline.
+ * Does not attempt to execute immediately.
+ */
+function queuePendingExecution(
+    partyCode: string,
+    entry: PromptEntry,
+    evaluation: EvaluationResult
+): void {
+    const queue = pendingExecutions.get(partyCode) ?? [];
+    queue.push({ entry, evaluation });
+    pendingExecutions.set(partyCode, queue);
+}
 
-            party.sendTo(connectionId, {
+/**
+ * Drain pending execution queues when backend becomes available.
+ * Does not block; executions run asynchronously.
+ */
+function drainPendingExecutions(): void {
+    if (!executionBackendAvailable && !isLocalMode()) return;
+
+    for (const [partyCode, queue] of pendingExecutions) {
+        if (queue.length === 0) continue;
+        const party = parties.get(partyCode);
+        if (!party) {
+            pendingExecutions.delete(partyCode);
+            continue;
+        }
+
+        pendingExecutions.set(partyCode, []);
+        for (const item of queue) {
+            void runExecutionFlow(party, item.entry, item.evaluation);
+        }
+    }
+}
+
+/**
+ * Execute a prompt through the orchestrator and emit protocol messages.
+ * Does not throw; errors are sent to the submitter.
+ */
+async function runExecutionFlow(
+    party: Party,
+    entry: PromptEntry,
+    evaluation: EvaluationResult
+): Promise<void> {
+    const orchestrator = orchestrators.get(party.code);
+    if (!orchestrator) {
+        party.sendTo(entry.connectionId, {
+            type: "error",
+            payload: {
+                message: "Execution backend unavailable",
+                code: ErrorCode.EXECUTION_FAILED,
+            },
+        });
+        return;
+    }
+
+    for await (const event of orchestrator.execute(entry, evaluation)) {
+        handleExecutionEvent(party, entry, event);
+    }
+}
+
+/**
+ * Map orchestrator events to protocol messages.
+ * Does not mutate prompt queue ordering.
+ */
+function handleExecutionEvent(
+    party: Party,
+    entry: PromptEntry,
+    event: ExecutionEvent
+): void {
+    switch (event.type) {
+        case "queued": {
+            sendExecutionQueued(
+                party,
+                entry.connectionId,
+                entry.promptId,
+                event.reason ?? "Waiting for execution slot..."
+            );
+            break;
+        }
+
+        case "stage": {
+            if (!event.stage) return;
+            party.sendTo(entry.connectionId, {
                 type: "execution-update",
-                payload: { promptId: entry.promptId, stage: "Agent is working..." },
+                payload: {
+                    promptId: entry.promptId,
+                    stage: event.stage,
+                    detail: event.detail,
+                },
             });
-            party.broadcast({
-                type: "member-execution-update",
-                payload: { username: entry.username, promptId: entry.promptId, stage: "Agent is working..." },
-            });
-
-            // Call real execution agent
-            const result = await executePromptChanges(entry, partyCode, greenlightLog);
-
-            if (!parties.has(partyCode)) return;
-
-            if (result.success) {
-                const totalAdded = result.files.reduce((sum, f) => sum + f.linesAdded, 0);
-                const totalRemoved = result.files.reduce((sum, f) => sum + f.linesRemoved, 0);
-                const summaryMsg = `Applied ${result.files.length} files (+${totalAdded}/-${totalRemoved}).`;
-
-                // Send execution-complete with real diffs
-                party.sendTo(connectionId, {
-                    type: "execution-complete",
+            party.broadcast(
+                {
+                    type: "member-execution-update",
                     payload: {
+                        username: entry.username,
                         promptId: entry.promptId,
-                        files: result.files,
-                        summary: summaryMsg,
+                        stage: event.stage,
                     },
-                });
+                },
+                entry.connectionId
+            );
+            break;
+        }
 
-                party.broadcast({
+        case "complete": {
+            if (!event.result) return;
+            const summary = event.result.summary
+                || buildSummary(event.result.files);
+
+            party.sendTo(entry.connectionId, {
+                type: "execution-complete",
+                payload: {
+                    promptId: entry.promptId,
+                    files: event.result.files,
+                    summary,
+                },
+            });
+
+            party.broadcast(
+                {
                     type: "member-execution-complete",
                     payload: {
                         username: entry.username,
                         promptId: entry.promptId,
-                        files: result.files,
-                        summary: summaryMsg,
+                        files: [],
+                        summary,
                     },
-                });
+                },
+                entry.connectionId
+            );
 
-                party.broadcast({
-                    type: "activity",
-                    payload: {
-                        username: entry.username,
-                        event: `'s changes were applied (${result.files.length} files, +${totalAdded}/-${totalRemoved})`,
-                        timestamp: Date.now(),
-                    },
-                });
-            } else {
-                party.sendTo(connectionId, {
-                    type: "error",
-                    // Use INVALID_MESSAGE code or something similar
-                    payload: { message: `Execution failed: ${result.summary}`, code: ErrorCode.INVALID_MESSAGE },
-                });
-            }
+            party.broadcast({
+                type: "activity",
+                payload: {
+                    username: entry.username,
+                    event:
+                        `${entry.username}'s changes were applied (${summary})`,
+                    timestamp: Date.now(),
+                },
+            });
 
             party.broadcast({
                 type: "member-status",
                 payload: { username: entry.username, status: "idle" },
             });
-        });
+            break;
+        }
 
-        execQueues.set(partyCode, next);
+        case "error": {
+            party.sendTo(entry.connectionId, {
+                type: "error",
+                payload: {
+                    message: event.message ?? "Execution failed",
+                    code: ErrorCode.EXECUTION_FAILED,
+                },
+            });
+
+            party.broadcast({
+                type: "activity",
+                payload: {
+                    username: entry.username,
+                    event: `${entry.username}'s execution failed`,
+                    timestamp: Date.now(),
+                },
+            });
+
+            party.broadcast({
+                type: "member-status",
+                payload: { username: entry.username, status: "idle" },
+            });
+            break;
+        }
     }
+}
 
-    return wss;
+/**
+ * Send execution-queued to the submitter.
+ * Does not change server-side execution state.
+ */
+function sendExecutionQueued(
+    party: Party,
+    connectionId: string,
+    promptId: string,
+    reason: string
+): void {
+    party.sendTo(connectionId, {
+        type: "execution-queued",
+        payload: { promptId, reason },
+    });
+}
+
+/**
+ * Build a concise summary for activity feed.
+ * Does not leak prompt content.
+ */
+function buildSummary(
+    files: Array<{ linesAdded: number; linesRemoved: number }>
+): string {
+    const added = files.reduce((sum, file) => sum + file.linesAdded, 0);
+    const removed = files.reduce((sum, file) => sum + file.linesRemoved, 0);
+    return `${files.length} files, +${added}/-${removed}`;
 }
 
 // ─── Helpers ───
@@ -546,23 +986,43 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
- * Gracefully shut down all parties: send PARTY_ENDED to all members,
- * then close all sockets. Call this before wss.close().
+ * Gracefully shut down all parties and bridge processes.
+ * Sends PARTY_ENDED before closing sockets and stopping orchestrators.
  */
 export function shutdownAllParties(): void {
     for (const [code, party] of parties) {
         log("Shutting down party", code);
         party.broadcast({
             type: "error",
-            payload: { message: "Server shutting down", code: ErrorCode.PARTY_ENDED },
+            payload: {
+                message: "Server shutting down",
+                code: ErrorCode.PARTY_ENDED,
+            },
         });
 
         for (const [, m] of party.members) {
             m.ws.close();
         }
+
+        const orchestrator = orchestrators.get(code);
+        if (orchestrator) {
+            void orchestrator.shutdown();
+        }
     }
     parties.clear();
     pendingParties.clear();
     evalQueues.clear();
-    execQueues.clear();
+    pendingExecutions.clear();
+    pendingEvaluations.clear();
+    orchestrators.clear();
+
+    if (bridgeHealthTimer) {
+        clearInterval(bridgeHealthTimer);
+        bridgeHealthTimer = null;
+    }
+
+    if (bridgeProcess) {
+        bridgeProcess.kill();
+        bridgeProcess = null;
+    }
 }
