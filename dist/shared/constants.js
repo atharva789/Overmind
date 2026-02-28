@@ -14,6 +14,8 @@ export const ErrorCode = {
     PARTY_FULL: "PARTY_FULL",
     HOST_DISCONNECTED: "HOST_DISCONNECTED",
     EXECUTION_FAILED: "EXECUTION_FAILED",
+    MERGE_RESOLUTION_FAILED: "MERGE_RESOLUTION_FAILED",
+    MERGE_PR_FAILED: "MERGE_PR_FAILED",
 };
 // ─── Defaults ───
 export const DEFAULT_PORT = 4444;
@@ -41,6 +43,11 @@ export const MAX_CONTEXT_PAYLOAD_CHARS = 20000;
 // ─── Modal bridge ───
 export const MODAL_BRIDGE_PORT = Number(process.env["OVERMIND_BRIDGE_PORT"] ?? "8377");
 export const MODAL_BRIDGE_URL = `http://localhost:${MODAL_BRIDGE_PORT}`;
+// ─── Merge conflict solver ───
+export const CONFLICT_RESOLVER_URL = process.env["CONFLICT_RESOLVER_URL"] ?? "";
+export const GITHUB_TOKEN = process.env["GITHUB_TOKEN"] ?? "";
+export const GITHUB_REPO = process.env["GITHUB_REPO"] ?? ""; // format: "owner/repo"
+export const GITHUB_BASE_BRANCH = process.env["GITHUB_BASE_BRANCH"] ?? "main";
 // ─── Orchestrator ───
 export const AGENT_CMD = process.env["OVERMIND_AGENT_CMD"] ?? "claude";
 export const AGENT_ARGS = (process.env["OVERMIND_AGENT_ARGS"]

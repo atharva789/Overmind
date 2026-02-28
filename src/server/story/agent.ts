@@ -125,7 +125,7 @@ async function evaluateAndClusterQuery(ai: GoogleGenAI, model: string, projectRo
         [projectId, ACTIVE_FEATURES_LIMIT]
     );
 
-    const featuresList = features.map(f => `Feature ID: ${f.id} | Title: ${f.title}\nDescription: ${f.description}`).join("\n\n");
+    const featuresList = features.map((f: any) => `Feature ID: ${f.id} | Title: ${f.title}\nDescription: ${f.description}`).join("\n\n");
 
     const prompt = `You are the Story Agent. Your task is to analyze a new user query and map it to the project's features.
 Review the list of currently active features below. Does the new user query belong to one of these?
