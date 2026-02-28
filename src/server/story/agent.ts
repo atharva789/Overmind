@@ -4,25 +4,32 @@ import { writeFile, readFile, readdir } from "fs/promises";
 import { join } from "path";
 import { GEMINI_MODEL_DEFAULT } from "../../shared/constants.js";
 
-const UNCLUSTERED_THRESHOLD = 5;
+const ACTIVE_FEATURES_LIMIT = 15;
 
-// Define the structured JSON schema for Gemini to cluster features
-const featureSchema = {
-    type: Type.ARRAY,
-    description: "A list of newly identified features clustered from the provided user prompts. Group related prompts into a single feature.",
-    items: {
-        type: Type.OBJECT,
-        properties: {
-            title: { type: Type.STRING, description: "Short, descriptive title for the feature (e.g. 'Stripe Payment Integration')" },
-            description: { type: Type.STRING, description: "A paragraph explaining what this feature is and what the queries under it accomplish." },
-            queryIds: {
-                type: Type.ARRAY,
-                items: { type: Type.STRING },
-                description: "The list of EXACT string UUIDs of the queries that belong to this clustered feature."
-            }
+// Define the structured JSON schema for Gemini to evaluate a new query
+const assignmentSchema = {
+    type: Type.OBJECT,
+    description: "Determine whether the new query belongs to an existing feature from the list, or requires a new feature to be created.",
+    properties: {
+        action: {
+            type: Type.STRING,
+            enum: ["assign_existing", "create_new"],
+            description: "Choose 'assign_existing' if the query clearly belongs to one of the provided features. Choose 'create_new' if the query represents a fundamentally new feature or direction."
         },
-        required: ["title", "description", "queryIds"]
-    }
+        feature_id: {
+            type: Type.STRING,
+            description: "If action is 'assign_existing', provide the exact string UUID of the matched feature."
+        },
+        title: {
+            type: Type.STRING,
+            description: "If action is 'create_new', provide a short descriptive title for the new feature."
+        },
+        description: {
+            type: Type.STRING,
+            description: "If action is 'create_new', provide a paragraph explaining the new feature."
+        }
+    },
+    required: ["action"]
 };
 
 export async function checkAndRunStoryAgent(projectRoot: string) {
@@ -45,14 +52,16 @@ export async function checkAndRunStoryAgent(projectRoot: string) {
             return;
         }
 
-        // 2. Populated State: Summarize recent prompts into Recent Features
+        // 2. Continuous State: Semantically cluster each unclustered query
         const { rows: unclustered } = await pool.query(
             "SELECT id, content, username, created_at FROM queries WHERE feature_id IS NULL ORDER BY created_at ASC"
         );
 
-        if (unclustered.length >= UNCLUSTERED_THRESHOLD) {
-            console.log(`[story-agent] Found ${unclustered.length} unclustered queries. Clustering...`);
-            await clusterQueriesAndRegenerateStory(ai, model, projectRoot, unclustered);
+        if (unclustered.length > 0) {
+            console.log(`[story-agent] Processing ${unclustered.length} unclustered queries...`);
+            for (const query of unclustered) {
+                await evaluateAndClusterQuery(ai, model, projectRoot, query);
+            }
         }
     } catch (err) {
         console.error("[story-agent] Error running story agent:", err);
@@ -109,15 +118,26 @@ Output ONLY a valid markdown document with a H1 title, a short intro, and a sect
     }
 }
 
-async function clusterQueriesAndRegenerateStory(ai: GoogleGenAI, model: string, projectRoot: string, unclustered: any[]) {
-    // Stringify the queries for the LLM
-    const queryList = unclustered.map(q => `ID: ${q.id} | User: ${q.username} | Prompt: ${q.content}`).join("\\n");
+async function evaluateAndClusterQuery(ai: GoogleGenAI, model: string, projectRoot: string, query: { id: string, username: string, content: string }) {
+    // Fetch the most recent active features to provide as context
+    const { rows: features } = await pool.query(
+        "SELECT id, title, description FROM features ORDER BY created_at DESC LIMIT $1",
+        [ACTIVE_FEATURES_LIMIT]
+    );
 
-    const prompt = `You are the Story Agent. Group the following user prompts into distinct, high-level features that the team is working on.
-A single feature might cover multiple related prompts. Create a descriptive title and description for each feature, and map the exact query IDs to them.
+    const featuresList = features.map(f => `Feature ID: ${f.id} | Title: ${f.title}\nDescription: ${f.description}`).join("\n\n");
 
-Prompts:
-${queryList}
+    const prompt = `You are the Story Agent. Your task is to analyze a new user query and map it to the project's features.
+Review the list of currently active features below. Does the new user query belong to one of these?
+If YES, output action: "assign_existing" and provide the exact feature_id.
+If NO, output action: "create_new" and provide a strong, descriptive title and description for a newly minted feature.
+
+Active Features:
+${features.length > 0 ? featuresList : "No features exist yet."}
+
+New Query to evaluate:
+User: ${query.username}
+Prompt: ${query.content}
 `;
 
     let response;
@@ -127,64 +147,63 @@ ${queryList}
             contents: prompt,
             config: {
                 responseMimeType: "application/json",
-                responseSchema: featureSchema,
+                responseSchema: assignmentSchema,
                 temperature: 0.1
             }
         });
     } catch (err: any) {
         if (err?.status === 429) {
-            console.log("[story-agent] Skipped clustering: Gemini API rate limit exceeded (429).");
+            console.log(`[story-agent] Skipped querying ${query.id}: Gemini API rate limit exceeded (429).`);
         } else {
-            console.error("[story-agent] Error during clustering:", err?.message || err);
+            console.error(`[story-agent] Error during clustering ${query.id}:`, err?.message || err);
         }
         return;
     }
 
     const rawJson = response.text;
     if (!rawJson) {
-        console.error("[story-agent] No response from Gemini for clustering.");
+        console.error(`[story-agent] No response from Gemini for query ${query.id}.`);
         return;
     }
 
-    let clusteredFeatures;
+    let decision;
     try {
-        clusteredFeatures = JSON.parse(rawJson);
+        decision = JSON.parse(rawJson);
     } catch (e) {
-        console.error("[story-agent] Failed to parse clustered features JSON:", rawJson);
+        console.error(`[story-agent] Failed to parse decision JSON for query ${query.id}:`, rawJson);
         return;
     }
 
-    // Insert features and update queries transactionally
     const client = await pool.connect();
     try {
         await client.query("BEGIN");
 
-        for (const feature of clusteredFeatures) {
-            // Insert feature
+        if (decision.action === "assign_existing" && decision.feature_id) {
+            // Verify feature actually exists just in case hallucination
+            const check = await client.query("SELECT id FROM features WHERE id = $1", [decision.feature_id]);
+            if (check.rows.length > 0) {
+                await client.query("UPDATE queries SET feature_id = $1 WHERE id = $2", [decision.feature_id, query.id]);
+                console.log(`[story-agent] Assigned query to existing Feature: ${decision.feature_id}`);
+            } else {
+                console.log(`[story-agent] Gemini hallucinated a non-existent feature ID: ${decision.feature_id}. Leaving unclustered.`);
+            }
+        }
+        else if (decision.action === "create_new" && decision.title && decision.description) {
             const insertRes = await client.query(
                 "INSERT INTO features (title, description) VALUES ($1, $2) RETURNING id",
-                [feature.title, feature.description]
+                [decision.title, decision.description]
             );
-            const featureId = insertRes.rows[0].id;
-
-            // Update queries
-            if (feature.queryIds && feature.queryIds.length > 0) {
-                // Ensure queryIds are actually valid UUIDs (or the ones we provided)
-                const ids = feature.queryIds.filter((id: string) => unclustered.some((u) => u.id === id));
-                if (ids.length > 0) {
-                    await client.query(
-                        `UPDATE queries SET feature_id = $1 WHERE id = ANY($2::uuid[])`,
-                        [featureId, ids]
-                    );
-                }
-            }
+            const newFeatureId = insertRes.rows[0].id;
+            await client.query("UPDATE queries SET feature_id = $1 WHERE id = $2", [newFeatureId, query.id]);
+            console.log(`[story-agent] Created new Feature: ${decision.title} (${newFeatureId})`);
+        } else {
+            console.log(`[story-agent] Invalid decision format from Gemini:`, decision);
         }
 
         await client.query("COMMIT");
-        console.log(`[story-agent] Successfully clustered ${clusteredFeatures.length} new features.`);
     } catch (e) {
         await client.query("ROLLBACK");
-        console.error("[story-agent] Transaction failed while inserting features:", e);
+        console.error(`[story-agent] Transaction failed for query ${query.id}:`, e);
         return;
     } finally {
         client.release();
