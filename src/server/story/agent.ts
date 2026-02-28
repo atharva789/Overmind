@@ -89,15 +89,23 @@ ${contextStr}
 
 Output ONLY a valid markdown document with a H1 title, a short intro, and a section "## Core Features" detailing what the app fundamentally does.`;
 
-    const response = await ai.models.generateContent({
-        model,
-        contents: prompt
-    });
+    try {
+        const response = await ai.models.generateContent({
+            model,
+            contents: prompt
+        });
 
-    const markdown = response.text;
-    if (markdown) {
-        await writeFile(join(projectRoot, "story.md"), markdown.trim(), "utf8");
-        console.log("[story-agent] Wrote initial story.md");
+        const markdown = response.text;
+        if (markdown) {
+            await writeFile(join(projectRoot, "story.md"), markdown.trim(), "utf8");
+            console.log("[story-agent] Wrote initial story.md");
+        }
+    } catch (err: any) {
+        if (err?.status === 429) {
+            console.log("[story-agent] Skipped initial generation: Gemini API rate limit exceeded (429).");
+        } else {
+            console.error("[story-agent] Error generating initial story:", err?.message || err);
+        }
     }
 }
 
@@ -112,15 +120,25 @@ Prompts:
 ${queryList}
 `;
 
-    const response = await ai.models.generateContent({
-        model,
-        contents: prompt,
-        config: {
-            responseMimeType: "application/json",
-            responseSchema: featureSchema,
-            temperature: 0.1
+    let response;
+    try {
+        response = await ai.models.generateContent({
+            model,
+            contents: prompt,
+            config: {
+                responseMimeType: "application/json",
+                responseSchema: featureSchema,
+                temperature: 0.1
+            }
+        });
+    } catch (err: any) {
+        if (err?.status === 429) {
+            console.log("[story-agent] Skipped clustering: Gemini API rate limit exceeded (429).");
+        } else {
+            console.error("[story-agent] Error during clustering:", err?.message || err);
         }
-    });
+        return;
+    }
 
     const rawJson = response.text;
     if (!rawJson) {

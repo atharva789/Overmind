@@ -2,9 +2,9 @@ import pg from "pg";
 
 const { Pool } = pg;
 
-// We use the OVERMIND_DATABASE_URL environment variable if provided,
+// We use the OVERMIND_DATABASE_URL or OVERMIND_SUPABASE_DB environment variable if provided,
 // otherwise default to a local standard postgres url.
-const connectionString = process.env.OVERMIND_DATABASE_URL || "postgresql://postgres:postgres@localhost:5432/overmind";
+const connectionString = process.env.OVERMIND_DATABASE_URL || process.env.OVERMIND_SUPABASE_DB || "postgresql://postgres:postgres@localhost:5432/overmind";
 
 export const dbOptions = {
     connectionString,
