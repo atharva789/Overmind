@@ -1,3 +1,8 @@
+// Purpose: Render the party member list and status indicators.
+// Behavior: Displays each member with host marker and status color.
+// Assumptions: Member status strings are controlled by the server.
+// Invariants: Rendering is pure and based on current state only.
+
 import React from "react";
 import { Box, Text, useStdout } from "ink";
 
@@ -15,7 +20,6 @@ const STATUS_COLORS: Record<string, string> = {
     idle: "green",
     typing: "yellow",
     queued: "blue",
-    "awaiting greenlight": "blue",
     "awaiting review": "magenta",
     executing: "cyan",
 };

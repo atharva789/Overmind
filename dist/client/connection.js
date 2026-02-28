@@ -1,111 +1,82 @@
-/**
- * Purpose: Auto-reconnecting WebSocket client wrapper with typed events.
- *
- * High-level behavior: Wraps a WebSocket with exponential back-off
- * reconnection (1 → 2 → 4 → 10 s cap). Validates all incoming
- * messages via parseServerMessage and drops invalid ones silently.
- * Emits typed events: connected, disconnected, reconnecting, message.
- *
- * Assumptions:
- *  - The provided URL is a valid ws:// or wss:// address.
- *  - Callers call connect() exactly once after registering handlers.
- *
- * Invariants:
- *  - Once disconnect() is called, no reconnect attempts occur.
- *  - Invalid messages never reach event handlers.
- *  - send() is a no-op when the socket is not open.
- */
 import { WebSocket } from "ws";
+import { EventEmitter } from "node:events";
 import { parseServerMessage } from "../shared/protocol.js";
-import { MAX_RECONNECT_DELAY_MS, RECONNECT_DELAYS_MS } from "../shared/constants.js";
-export class Connection {
-    url;
+import { RECONNECT_INITIAL_MS, RECONNECT_MAX_MS, } from "../shared/constants.js";
+export class Connection extends EventEmitter {
     ws = null;
-    _stopped = false;
-    _reconnectAttempt = 0;
-    _reconnectTimer = null;
-    _listeners = new Map([
-        ["connected", new Set()],
-        ["disconnected", new Set()],
-        ["reconnecting", new Set()],
-        ["message", new Set()],
-    ]);
-    constructor(url) {
-        this.url = url;
-    }
-    on(event, handler) {
-        this._listeners.get(event).add(handler);
-        return this;
-    }
-    off(event, handler) {
-        this._listeners.get(event).delete(handler);
-        return this;
+    url;
+    autoReconnect;
+    manualDisconnect = false;
+    reconnectDelay = RECONNECT_INITIAL_MS;
+    reconnectTimer = null;
+    constructor(options) {
+        super();
+        this.url = options.url;
+        this.autoReconnect = options.autoReconnect ?? true;
     }
     connect() {
-        if (this._stopped)
-            return;
-        this._open();
+        this.manualDisconnect = false;
+        this.doConnect();
+    }
+    doConnect() {
+        this.ws = new WebSocket(this.url);
+        this.ws.on("open", () => {
+            this.reconnectDelay = RECONNECT_INITIAL_MS;
+            this.emit("connected");
+        });
+        this.ws.on("message", (raw) => {
+            const data = typeof raw === "string" ? raw : raw.toString("utf-8");
+            const msg = parseServerMessage(data);
+            if (msg) {
+                this.emit("message", msg);
+            }
+            // Silently ignore invalid messages (never throw)
+        });
+        this.ws.on("close", () => {
+            this.emit("disconnected");
+            if (!this.manualDisconnect && this.autoReconnect) {
+                this.scheduleReconnect();
+            }
+        });
+        this.ws.on("error", () => {
+            // Error will be followed by close event
+        });
+    }
+    scheduleReconnect() {
+        this.emit("reconnecting", this.reconnectDelay);
+        this.reconnectTimer = setTimeout(() => {
+            this.doConnect();
+        }, this.reconnectDelay);
+        // Exponential backoff: 1s → 2s → 4s → 8s → 10s (capped)
+        this.reconnectDelay = Math.min(this.reconnectDelay * 2, RECONNECT_MAX_MS);
+    }
+    send(data) {
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+            this.ws.send(JSON.stringify(data));
+        }
     }
     disconnect() {
-        this._stopped = true;
-        if (this._reconnectTimer !== null) {
-            clearTimeout(this._reconnectTimer);
-            this._reconnectTimer = null;
-        }
+        this.manualDisconnect = true;
+        this.clearReconnectTimer();
         if (this.ws) {
             this.ws.close();
             this.ws = null;
         }
     }
-    send(msg) {
-        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-            this.ws.send(JSON.stringify(msg));
+    /** Stop reconnecting without closing the current socket */
+    stopReconnecting() {
+        this.manualDisconnect = true;
+        this.clearReconnectTimer();
+    }
+    clearReconnectTimer() {
+        if (this.reconnectTimer) {
+            clearTimeout(this.reconnectTimer);
+            this.reconnectTimer = null;
         }
     }
-    get isConnected() {
-        return this.ws !== null && this.ws.readyState === WebSocket.OPEN;
-    }
-    _open() {
-        const ws = new WebSocket(this.url);
-        this.ws = ws;
-        ws.on("open", () => {
-            this._reconnectAttempt = 0;
-            this._emit("connected");
-        });
-        ws.on("message", (data) => {
-            const msg = parseServerMessage(data.toString());
-            if (msg) {
-                this._emit("message", msg);
-            }
-            // Invalid messages are silently dropped — never throw
-        });
-        ws.on("close", () => {
-            if (this._stopped) {
-                this._emit("disconnected");
-                return;
-            }
-            this._scheduleReconnect();
-        });
-        ws.on("error", () => {
-            // Error will be followed by close — handle in close handler
-        });
-    }
-    _scheduleReconnect() {
-        if (this._stopped)
-            return;
-        this._reconnectAttempt++;
-        const delays = [...RECONNECT_DELAYS_MS];
-        const delay = Math.min(delays[Math.min(this._reconnectAttempt - 1, delays.length - 1)] ?? MAX_RECONNECT_DELAY_MS, MAX_RECONNECT_DELAY_MS);
-        this._emit("reconnecting", this._reconnectAttempt);
-        this._reconnectTimer = setTimeout(() => {
-            this._reconnectTimer = null;
-            this._open();
-        }, delay);
-    }
-    _emit(event, ...args) {
-        for (const handler of this._listeners.get(event) ?? []) {
-            handler(...args);
-        }
+    /** Type-safe listener for ServerMessage events */
+    onMessage(handler) {
+        this.on("message", handler);
     }
 }
 //# sourceMappingURL=connection.js.map

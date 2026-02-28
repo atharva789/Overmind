@@ -1,3 +1,8 @@
+// Purpose: Render the top status bar with party and connection info.
+// Behavior: Shows party code, member count, and backend availability.
+// Assumptions: Execution backend availability is a boolean flag.
+// Invariants: Status bar rendering is pure and side-effect free.
+
 import React from "react";
 import { Box, Text, useStdout } from "ink";
 
@@ -5,7 +10,6 @@ interface StatusBarProps {
     partyCode: string;
     memberCount: number;
     connectionStatus: "connected" | "reconnecting" | "disconnected";
-    greenlightAvailable?: boolean;
     executionBackendAvailable?: boolean;
 }
 
@@ -13,7 +17,6 @@ export default function StatusBar({
     partyCode,
     memberCount,
     connectionStatus,
-    greenlightAvailable = true,
     executionBackendAvailable = true,
 }: StatusBarProps): React.ReactElement {
     const { stdout } = useStdout();
@@ -35,7 +38,6 @@ export default function StatusBar({
                 : "Disconnected";
 
     const warnings: string[] = [];
-    if (!greenlightAvailable) warnings.push("⚠ Greenlight unavailable");
     if (!executionBackendAvailable) warnings.push("⚠ Execution offline");
 
     const content = `OVERMIND · Party: ${partyCode} · ${memberCount} member${memberCount !== 1 ? "s" : ""} · `;

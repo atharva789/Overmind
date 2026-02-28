@@ -1,3 +1,8 @@
+// Purpose: Maintain party state for connected members and prompts.
+// Behavior: Tracks host, members, and prompt queue with deterministic IDs.
+// Assumptions: Each party has a single host and unique usernames.
+// Invariants: Member connection IDs and usernames remain unique per party.
+
 import { WebSocket } from "ws";
 import { customAlphabet } from "nanoid";
 import type { ServerMessage } from "../shared/protocol.js";
@@ -30,16 +35,23 @@ export interface PromptEntry {
 export class Party {
     code: string;
     hostId: string;
+    repository: string;
     members: Map<string, Member> = new Map();
     promptQueue: PromptEntry[] = [];
 
     private usernameSet: Set<string> = new Set();
     private promptCounter = 0;
 
-    constructor(connectionId: string, hostWs: WebSocket, hostUsername: string) {
+    constructor(
+        connectionId: string,
+        hostWs: WebSocket,
+        hostUsername: string,
+        repository: string
+    ) {
         this.code = generatePartyCode();
         const resolvedUsername = this.resolveUsername(hostUsername);
         this.hostId = connectionId;
+        this.repository = repository;
 
         this.members.set(connectionId, {
             connectionId,

@@ -1,35 +1,23 @@
-import { jsx as _jsx, jsxs as _jsxs } from "react/jsx-runtime";
-/**
- * Purpose: Dim event log showing the last 5 party activity events.
- *
- * High-level behavior: Renders events in "HH:MM  username  event"
- * format, dimmed. Shows at most 5 entries. Lines that exceed the
- * terminal width are truncated. No scrolling is provided.
- *
- * Assumptions:
- *  - events array contains at most 5 entries (enforced by reducer).
- *  - Prompt content is never present in event strings.
- *
- * Invariants:
- *  - Never renders more than 5 entries.
- *  - No prompt content is ever displayed.
- */
-import { Box, Text } from "ink";
+import { jsx as _jsx } from "react/jsx-runtime";
+import { Box, Text, useStdout } from "ink";
+const MAX_EVENTS = 5;
 function formatTime(ts) {
     const d = new Date(ts);
-    const hh = String(d.getHours()).padStart(2, "0");
-    const mm = String(d.getMinutes()).padStart(2, "0");
-    return `${hh}:${mm}`;
+    return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
-function truncateLine(s, max) {
-    return s.length <= max ? s : s.slice(0, max - 1) + "…";
-}
-export function ActivityFeed({ events, width }) {
-    const visible = events.slice(-5);
-    const separator = "─".repeat(Math.max(width, 1));
-    return (_jsxs(Box, { flexDirection: "column", children: [_jsx(Text, { dimColor: true, children: separator }), visible.map((e, i) => {
-                const line = `${formatTime(e.timestamp)}  ${e.username}  ${e.event}`;
-                return (_jsx(Text, { dimColor: true, children: truncateLine(line, width - 1) }, i));
-            }), visible.length === 0 && (_jsx(Text, { dimColor: true, children: "No activity yet." }))] }));
+export default function ActivityFeed({ events }) {
+    const { stdout } = useStdout();
+    const width = stdout?.columns ?? 80;
+    const visible = events.slice(-MAX_EVENTS);
+    if (visible.length === 0) {
+        return (_jsx(Box, { paddingX: 1, children: _jsx(Text, { dimColor: true, children: "No activity yet." }) }));
+    }
+    return (_jsx(Box, { flexDirection: "column", paddingX: 1, children: visible.map((evt, i) => {
+            const line = `${formatTime(evt.timestamp)}  ${evt.username} ${evt.event}`;
+            // Truncate if it overflows
+            const maxLen = Math.max(width - 4, 20);
+            const display = line.length > maxLen ? line.slice(0, maxLen - 1) + "…" : line;
+            return (_jsx(Text, { dimColor: true, wrap: "truncate", children: display }, i));
+        }) }));
 }
 //# sourceMappingURL=ActivityFeed.js.map

@@ -1,53 +1,33 @@
 import { jsx as _jsx, jsxs as _jsxs } from "react/jsx-runtime";
-/**
- * Purpose: Displays prompt lifecycle outputs for the current user's
- * active prompt.
- *
- * High-level behavior: Filters state.outputs to only those belonging
- * to state.currentPromptId and renders the last N entries that fit.
- * When no prompt is active, shows a dim placeholder. Each entry is
- * prefixed with a colored Badge indicating its type.
- *
- * Assumptions:
- *  - outputs contains only entries for the local user's own prompts.
- *  - width is the available horizontal space after PartyPanel.
- *
- * Invariants:
- *  - Prompt content from other members is never rendered here.
- *  - At most MAX_VISIBLE entries are shown to avoid overflow.
- */
-import { Box, Text } from "ink";
-import { Badge } from "./components/Badge.js";
-import { Spinner } from "./components/Spinner.js";
-const MAX_VISIBLE = 12;
-const BADGE_COLOR = {
-    queued: "blue",
-    greenlit: "green",
-    redlit: "red",
-    approved: "green",
-    denied: "red",
-    diff: "cyan",
-    complete: "green",
-    error: "red",
+import { Box, Text, useStdout } from "ink";
+import Spinner from "./components/Spinner.js";
+import Badge from "./components/Badge.js";
+const STATUS_CONFIG = {
+    queued: { color: "blue", label: "QUEUED" },
+    approved: { color: "green", label: "APPROVED" },
+    denied: { color: "red", label: "DENIED" },
+    diff: { color: "cyan", label: "DIFF" },
+    complete: { color: "green", label: "COMPLETE" },
+    error: { color: "red", label: "ERROR" },
 };
-const PENDING_TYPES = new Set(["queued", "greenlit"]);
-export function OutputView({ outputs, currentPromptId, width: _width, }) {
-    if (!currentPromptId) {
-        if (outputs.length === 0) {
-            return (_jsx(Box, { flexGrow: 1, paddingLeft: 1, children: _jsx(Text, { dimColor: true, children: "No active prompt \u2014 type below to submit." }) }));
-        }
-        // Show last entry of most recent prompt after it resolves
-        const last = outputs[outputs.length - 1];
-        if (!last) {
-            return _jsx(Box, { flexGrow: 1 });
-        }
-        return (_jsxs(Box, { flexGrow: 1, flexDirection: "column", paddingLeft: 1, children: [_jsx(Text, { dimColor: true, children: "Last result:" }), _jsxs(Box, { flexDirection: "row", gap: 1, children: [_jsx(Badge, { label: last.type, color: BADGE_COLOR[last.type] }), _jsx(Text, { children: last.text })] })] }));
+const MAX_VISIBLE = 20;
+export default function OutputView({ outputs, currentPromptId, }) {
+    const { stdout } = useStdout();
+    const height = stdout?.rows ?? 30;
+    // Only show outputs for the current prompt
+    const filtered = currentPromptId
+        ? outputs.filter((o) => o.promptId === currentPromptId)
+        : [];
+    // Show last N entries based on available space
+    const maxItems = Math.min(MAX_VISIBLE, Math.max(height - 10, 3));
+    const visible = filtered.slice(-maxItems);
+    if (visible.length === 0) {
+        return (_jsx(Box, { flexDirection: "column", flexGrow: 1, paddingX: 1, children: _jsx(Text, { dimColor: true, children: "No active prompt. Type a prompt below to get started." }) }));
     }
-    const relevant = outputs
-        .filter((o) => o.promptId === currentPromptId)
-        .slice(-MAX_VISIBLE);
-    const isStillPending = relevant.length === 0 ||
-        PENDING_TYPES.has(relevant[relevant.length - 1].type);
-    return (_jsxs(Box, { flexGrow: 1, flexDirection: "column", paddingLeft: 1, children: [relevant.map((o, i) => (_jsxs(Box, { flexDirection: "row", gap: 1, children: [_jsx(Badge, { label: o.type, color: BADGE_COLOR[o.type] }), _jsx(Text, { children: o.text })] }, i))), isStillPending && (_jsxs(Box, { flexDirection: "row", gap: 1, children: [_jsx(Spinner, {}), _jsx(Text, { dimColor: true, children: "Waiting\u2026" })] }))] }));
+    return (_jsx(Box, { flexDirection: "column", flexGrow: 1, paddingX: 1, children: visible.map((entry) => {
+            const config = STATUS_CONFIG[entry.status];
+            const isActive = entry.status === "queued";
+            return (_jsxs(Box, { flexDirection: "column", marginBottom: 0, children: [_jsxs(Box, { children: [_jsx(Badge, { label: config.label, color: config.color }), isActive && _jsx(Spinner, { color: "blue" })] }), _jsxs(Text, { color: "gray", wrap: "truncate", children: ["  ", entry.message] })] }, entry.id));
+        }) }));
 }
 //# sourceMappingURL=OutputView.js.map

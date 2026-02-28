@@ -1,3 +1,8 @@
+// Purpose: Allow the host to approve or deny submitted prompts.
+// Behavior: Displays prompt content and captures approval or denial.
+// Assumptions: Only the host receives review requests.
+// Invariants: Decisions are explicit and require host input.
+
 import React, { useState, useCallback } from "react";
 import { Box, Text, useInput } from "ink";
 import TextInput from "ink-text-input";
@@ -6,8 +11,6 @@ export interface ReviewRequest {
     promptId: string;
     username: string;
     content: string;
-    reasoning: string;
-    conflicts: string[];
 }
 
 interface ReviewPanelProps {
@@ -78,24 +81,6 @@ export default function ReviewPanel({
                     {"  "}{request.content}
                 </Text>
             </Box>
-
-            {request.reasoning && (
-                <Box flexDirection="column" marginTop={0}>
-                    <Text bold>Agent reasoning:</Text>
-                    <Text color="yellow" dimColor wrap="wrap">
-                        {"  "}{request.reasoning}
-                    </Text>
-                </Box>
-            )}
-
-            {request.conflicts.length > 0 && (
-                <Box flexDirection="column" marginTop={0}>
-                    <Text bold color="red">Conflicts:</Text>
-                    {request.conflicts.map((c, i) => (
-                        <Text key={i} color="red">{"  • "}{c}</Text>
-                    ))}
-                </Box>
-            )}
 
             <Text> </Text>
 

@@ -1,12 +1,23 @@
 #!/usr/bin/env node
 
+// Purpose: Provide CLI entrypoints for hosting and joining parties.
+// Behavior: Starts the server, resolves repository, and launches the TUI.
+// Assumptions: Commands are run inside a GitHub-backed git repository.
+// Invariants: Join payloads always include a validated repository slug.
+
 import { Command } from "commander";
 import os from "node:os";
 import React from "react";
 import { render } from "ink";
-import { startServer, reserveParty, shutdownAllParties, setMaxMembers } from "./server/index.js";
+import {
+    startServer,
+    reserveParty,
+    shutdownAllParties,
+    setMaxMembers,
+} from "./server/index.js";
 import { Session } from "./client/session.js";
 import { DEFAULT_PORT, MAX_MEMBERS_DEFAULT } from "./shared/constants.js";
+import { resolveGitHubRepository } from "./client/repository.js";
 import App from "./client/ui/App.js";
 
 const program = new Command();
@@ -27,6 +38,7 @@ program
         const username = opts.username ?? getDefaultUsername();
         const maxMem = Number(opts.maxMembers) || MAX_MEMBERS_DEFAULT;
         const isTTY = !!process.stdout.isTTY;
+        const repository = requireGitHubRepository();
 
         setMaxMembers(maxMem);
         process.env["OVERMIND_PORT"] = String(port);
@@ -51,6 +63,7 @@ program
                 port,
                 partyCode: code,
                 username,
+                repository,
                 silent: isTTY,
             });
 
@@ -100,12 +113,14 @@ program
             const username = opts.username ?? getDefaultUsername();
             const port = Number(opts.port);
             const isTTY = !!process.stdout.isTTY;
+            const repository = requireGitHubRepository();
 
             const session = new Session({
                 host: opts.server,
                 port,
                 partyCode: code.toUpperCase(),
                 username,
+                repository,
                 silent: isTTY,
             });
 
@@ -144,6 +159,15 @@ function getDefaultUsername(): string {
     } catch {
         return process.env["USER"] ?? "anonymous";
     }
+}
+
+function requireGitHubRepository(): string {
+    const repository = resolveGitHubRepository(process.cwd());
+    if (repository) return repository;
+
+    console.error("Overmind requires a GitHub origin repository.");
+    console.error("Run this command inside a git repo with an origin remote.");
+    process.exit(1);
 }
 
 function sleep(ms: number): Promise<void> {

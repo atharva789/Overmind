@@ -1,118 +1,162 @@
-/**
- * Purpose: High-level client session — wraps Connection with join
- * flow and optional headless console logging.
- *
- * High-level behavior: On connect, immediately sends a `join` message.
- * In headless mode (silent: false, default), logs all server messages
- * to the console using chalk and auto-stops on fatal errors. In silent
- * mode (silent: true), only the join flow runs; the Ink UI layer
- * subscribes to events directly via the exposed `connection` property.
- *
- * Assumptions:
- *  - start() is called exactly once per Session instance.
- *  - In silent mode, all display is handled by the Ink UI layer.
- *
- * Invariants:
- *  - Join message is always sent on connect and reconnect.
- *  - In headless mode, PARTY_ENDED / PARTY_NOT_FOUND stop the session.
- */
-import chalk from "chalk";
+// Purpose: Manage a client session and route server messages.
+// Behavior: Connects to the server, sends join payload, and logs output.
+// Assumptions: The caller provides a validated GitHub repository slug.
+// Invariants: Connection lifecycle is deterministic and reconnect-safe.
 import { Connection } from "./connection.js";
+import { DEFAULT_PORT } from "../shared/constants.js";
 export class Session {
-    conn;
-    username;
+    connection;
     partyCode;
-    constructor(opts) {
-        this.username = opts.username;
-        this.partyCode = opts.partyCode;
-        this.conn = new Connection(opts.serverUrl);
-        // Always send join immediately on (re)connect.
-        this.conn.on("connected", () => {
-            const joinMsg = {
+    username;
+    repository;
+    silent;
+    constructor(options) {
+        const host = options.host ?? "localhost";
+        const port = options.port ?? DEFAULT_PORT;
+        this.partyCode = options.partyCode;
+        this.username = options.username;
+        this.repository = options.repository;
+        this.silent = options.silent ?? false;
+        this.connection = new Connection({
+            url: `ws://${host}:${port}`,
+        });
+        this.setupHandlers();
+    }
+    setupHandlers() {
+        this.connection.on("connected", () => {
+            if (!this.silent)
+                console.log("[session] Connected to server");
+            // Send join message
+            this.connection.send({
                 type: "join",
                 payload: {
-                    partyCode: opts.partyCode,
-                    username: opts.username,
+                    partyCode: this.partyCode,
+                    username: this.username,
+                    repository: this.repository,
                 },
-            };
-            this.conn.send(joinMsg);
+            });
         });
-        if (!opts.silent) {
-            this._attachHeadlessLogging(opts.partyCode);
+        this.connection.on("disconnected", () => {
+            if (!this.silent)
+                console.log("[session] Disconnected");
+        });
+        this.connection.on("reconnecting", (delay) => {
+            if (!this.silent)
+                console.log(`[session] Reconnecting in ${delay}ms...`);
+        });
+        this.connection.onMessage((msg) => {
+            this.handleServerMessage(msg);
+        });
+    }
+    handleServerMessage(msg) {
+        if (this.silent) {
+            // In UI mode, only handle terminal error logic
+            if (msg.type === "error") {
+                const terminalCodes = [
+                    "PARTY_ENDED",
+                    "PARTY_NOT_FOUND",
+                    "JOIN_TIMEOUT",
+                    "HOST_DISCONNECTED",
+                    "PARTY_FULL",
+                    "REPO_INVALID",
+                    "REPO_MISMATCH",
+                ];
+                if (terminalCodes.includes(msg.payload.code)) {
+                    this.connection.stopReconnecting();
+                }
+            }
+            return;
         }
-    }
-    /** Exposes the underlying Connection for UI layer subscriptions. */
-    get connection() {
-        return this.conn;
-    }
-    start() {
-        this.conn.connect();
-    }
-    stop() {
-        this.conn.disconnect();
-    }
-    sendRaw(msg) {
-        this.conn.send(msg);
-    }
-    _attachHeadlessLogging(partyCode) {
-        const tag = chalk.cyan("[session]");
-        this.conn
-            .on("disconnected", () => {
-            console.log(tag, chalk.dim(`Disconnected from party ${partyCode}`));
-        })
-            .on("reconnecting", (attempt) => {
-            console.log(tag, chalk.yellow(`Reconnecting (attempt ${attempt})...`));
-        })
-            .on("message", (msg) => {
-            this._handleMessage(msg);
-        });
-    }
-    _handleMessage(msg) {
-        const tag = chalk.cyan("[session]");
+        // Console fallback (Phase 1 behavior)
         switch (msg.type) {
             case "join-ack":
-                console.log(tag, chalk.green("Joined party"), chalk.bold(msg.payload.partyCode), "|", msg.payload.members.join(", "), "|", msg.payload.isHost ? chalk.magenta("host") : "member");
+                console.log(`[party] Joined ${msg.payload.partyCode}`);
+                console.log(`[party] Members: ${msg.payload.members.join(", ")}`);
+                console.log(`[party] Is host: ${msg.payload.isHost}`);
                 break;
             case "member-joined":
-                console.log(tag, chalk.green(msg.payload.username), "joined");
+                console.log(`[party] ${msg.payload.username} joined`);
                 break;
             case "member-left":
-                console.log(tag, chalk.yellow(msg.payload.username), "left");
+                console.log(`[party] ${msg.payload.username} left`);
                 break;
             case "member-status":
-                break; // headless mode: status updates are not logged
-            case "activity":
-                console.log(tag, chalk.dim(`${msg.payload.username}: ${msg.payload.event}`));
+                console.log(`[status] ${msg.payload.username}: ${msg.payload.status}`);
                 break;
             case "prompt-queued":
-                console.log(tag, `Prompt ${msg.payload.promptId}`, `queued at position ${msg.payload.position}`);
-                break;
-            case "prompt-greenlit":
-                console.log(tag, chalk.green(`Prompt ${msg.payload.promptId} greenlit:`), msg.payload.reasoning);
-                break;
-            case "prompt-redlit":
-                console.log(tag, chalk.red(`Prompt ${msg.payload.promptId} redlit:`), msg.payload.reasoning);
-                break;
-            case "host-review-request":
-                console.log(tag, chalk.magenta("[HOST]"), `Review request from ${msg.payload.username}`, `(prompt: ${msg.payload.promptId})`);
+                console.log(`[prompt] Queued at position ${msg.payload.position}`);
                 break;
             case "prompt-approved":
-                console.log(tag, chalk.green(`Prompt ${msg.payload.promptId} approved`));
+                console.log(`[prompt] Approved: ${msg.payload.promptId}`);
                 break;
             case "prompt-denied":
-                console.log(tag, chalk.red(`Prompt ${msg.payload.promptId} denied:`), msg.payload.reason);
+                console.log(`[prompt] Denied: ${msg.payload.reason}`);
                 break;
-            case "error":
-                console.error(tag, chalk.red(`Error [${msg.payload.code}]:`), msg.payload.message);
-                if (msg.payload.code === "PARTY_ENDED" ||
-                    msg.payload.code === "PARTY_NOT_FOUND" ||
-                    msg.payload.code === "JOIN_TIMEOUT") {
-                    this.stop();
+            case "host-review-request":
+                console.log(`[host] Review request from ${msg.payload.username}`);
+                console.log(`[host] Content: ${msg.payload.content}`);
+                break;
+            case "activity":
+                console.log(`[activity] ${msg.payload.username}: ${msg.payload.event}`);
+                break;
+            case "error": {
+                console.error(`[error] ${msg.payload.code}: ${msg.payload.message}`);
+                const terminalCodes = [
+                    "PARTY_ENDED",
+                    "PARTY_NOT_FOUND",
+                    "JOIN_TIMEOUT",
+                    "HOST_DISCONNECTED",
+                    "PARTY_FULL",
+                    "REPO_INVALID",
+                    "REPO_MISMATCH",
+                ];
+                if (terminalCodes.includes(msg.payload.code)) {
+                    this.connection.stopReconnecting();
                 }
                 break;
-            default:
+            }
+            case "execution-queued":
+                console.log(`[exec] Queued: ${msg.payload.reason}`);
+                break;
+            case "execution-update":
+                console.log(`[exec] Stage: ${msg.payload.stage}`);
+                break;
+            case "execution-complete":
+                console.log(`[exec] Complete: ${msg.payload.summary}`);
+                for (const f of msg.payload.files) {
+                    console.log(`[exec]   ${f.path} (+${f.linesAdded}/-${f.linesRemoved})`);
+                }
+                break;
+            case "system-status":
+                if (!msg.payload.executionBackendAvailable) {
+                    console.log(`[system] ⚠ Execution backend unavailable`);
+                }
                 break;
         }
+    }
+    connect() {
+        this.connection.connect();
+    }
+    disconnect() {
+        this.connection.disconnect();
+    }
+    submitPrompt(promptId, content, scope) {
+        this.connection.send({
+            type: "prompt-submit",
+            payload: { promptId, content, scope },
+        });
+    }
+    sendVerdict(promptId, verdict, reason) {
+        this.connection.send({
+            type: "host-verdict",
+            payload: { promptId, verdict, reason },
+        });
+    }
+    sendStatusUpdate(status) {
+        this.connection.send({
+            type: "status-update",
+            payload: { status },
+        });
     }
 }
 //# sourceMappingURL=session.js.map

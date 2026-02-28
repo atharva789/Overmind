@@ -1,3 +1,8 @@
+// Purpose: Manage a client session and route server messages.
+// Behavior: Connects to the server, sends join payload, and logs output.
+// Assumptions: The caller provides a validated GitHub repository slug.
+// Invariants: Connection lifecycle is deterministic and reconnect-safe.
+
 import { Connection } from "./connection.js";
 import type { ServerMessage } from "../shared/protocol.js";
 import { DEFAULT_PORT } from "../shared/constants.js";
@@ -7,6 +12,7 @@ export interface SessionOptions {
     port?: number;
     partyCode: string;
     username: string;
+    repository: string;
     /** If true, skip console.log handlers (UI mode handles display) */
     silent?: boolean;
 }
@@ -15,6 +21,7 @@ export class Session {
     readonly connection: Connection;
     private partyCode: string;
     public readonly username: string;
+    private repository: string;
     private silent: boolean;
 
     constructor(options: SessionOptions) {
@@ -22,6 +29,7 @@ export class Session {
         const port = options.port ?? DEFAULT_PORT;
         this.partyCode = options.partyCode;
         this.username = options.username;
+        this.repository = options.repository;
         this.silent = options.silent ?? false;
 
         this.connection = new Connection({
@@ -41,6 +49,7 @@ export class Session {
                 payload: {
                     partyCode: this.partyCode,
                     username: this.username,
+                    repository: this.repository,
                 },
             });
         });
@@ -62,7 +71,15 @@ export class Session {
         if (this.silent) {
             // In UI mode, only handle terminal error logic
             if (msg.type === "error") {
-                const terminalCodes = ["PARTY_ENDED", "PARTY_NOT_FOUND", "JOIN_TIMEOUT", "HOST_DISCONNECTED", "PARTY_FULL"];
+                const terminalCodes = [
+                    "PARTY_ENDED",
+                    "PARTY_NOT_FOUND",
+                    "JOIN_TIMEOUT",
+                    "HOST_DISCONNECTED",
+                    "PARTY_FULL",
+                    "REPO_INVALID",
+                    "REPO_MISMATCH",
+                ];
                 if (terminalCodes.includes(msg.payload.code)) {
                     this.connection.stopReconnecting();
                 }
@@ -94,14 +111,6 @@ export class Session {
                 console.log(`[prompt] Queued at position ${msg.payload.position}`);
                 break;
 
-            case "prompt-greenlit":
-                console.log(`[prompt] Greenlit: ${msg.payload.reasoning}`);
-                break;
-
-            case "prompt-redlit":
-                console.log(`[prompt] Redlit: ${msg.payload.reasoning}`);
-                break;
-
             case "prompt-approved":
                 console.log(`[prompt] Approved: ${msg.payload.promptId}`);
                 break;
@@ -123,7 +132,15 @@ export class Session {
 
             case "error": {
                 console.error(`[error] ${msg.payload.code}: ${msg.payload.message}`);
-                const terminalCodes = ["PARTY_ENDED", "PARTY_NOT_FOUND", "JOIN_TIMEOUT", "HOST_DISCONNECTED", "PARTY_FULL"];
+                const terminalCodes = [
+                    "PARTY_ENDED",
+                    "PARTY_NOT_FOUND",
+                    "JOIN_TIMEOUT",
+                    "HOST_DISCONNECTED",
+                    "PARTY_FULL",
+                    "REPO_INVALID",
+                    "REPO_MISMATCH",
+                ];
                 if (terminalCodes.includes(msg.payload.code)) {
                     this.connection.stopReconnecting();
                 }
@@ -146,8 +163,8 @@ export class Session {
                 break;
 
             case "system-status":
-                if (!msg.payload.greenlightAvailable) {
-                    console.log(`[system] ⚠ Greenlight agent unavailable`);
+                if (!msg.payload.executionBackendAvailable) {
+                    console.log(`[system] ⚠ Execution backend unavailable`);
                 }
                 break;
         }

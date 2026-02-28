@@ -1,27 +1,15 @@
-import { jsx as _jsx } from "react/jsx-runtime";
-/**
- * Purpose: Animated spinner component for in-progress state feedback.
- *
- * High-level behavior: Cycles through Braille dot frames at ~80 ms per
- * frame using a setInterval. Renders as a single cyan character.
- *
- * Assumptions:
- *  - Component is mounted only when a spinner should be visible.
- *
- * Invariants:
- *  - Interval is always cleared on unmount to prevent memory leaks.
- */
+import { jsx as _jsx, jsxs as _jsxs } from "react/jsx-runtime";
 import { useState, useEffect } from "react";
 import { Text } from "ink";
 const FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-export function Spinner() {
+export default function Spinner({ color = "cyan", label }) {
     const [frame, setFrame] = useState(0);
     useEffect(() => {
         const timer = setInterval(() => {
-            setFrame((f) => (f + 1) % FRAMES.length);
+            setFrame((prev) => (prev + 1) % FRAMES.length);
         }, 80);
         return () => clearInterval(timer);
     }, []);
-    return _jsx(Text, { color: "cyan", children: FRAMES[frame] });
+    return (_jsxs(Text, { children: [_jsx(Text, { color: color, children: FRAMES[frame] }), label ? _jsxs(Text, { children: [" ", label] }) : null] }));
 }
 //# sourceMappingURL=Spinner.js.map

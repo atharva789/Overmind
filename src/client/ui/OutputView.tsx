@@ -1,3 +1,8 @@
+// Purpose: Render prompt lifecycle output entries for the active prompt.
+// Behavior: Shows badges, messages, and a spinner for queued items.
+// Assumptions: Output entries are pre-filtered by prompt ID.
+// Invariants: Rendering is pure and does not mutate state.
+
 import React from "react";
 import { Box, Text, useStdout } from "ink";
 import Spinner from "./components/Spinner.js";
@@ -5,8 +10,6 @@ import Badge from "./components/Badge.js";
 
 export type OutputStatus =
     | "queued"
-    | "greenlit"
-    | "redlit"
     | "approved"
     | "denied"
     | "diff"
@@ -28,8 +31,6 @@ interface OutputViewProps {
 
 const STATUS_CONFIG: Record<OutputStatus, { color: string; label: string }> = {
     queued: { color: "blue", label: "QUEUED" },
-    greenlit: { color: "green", label: "GREENLIT" },
-    redlit: { color: "red", label: "REDLIT" },
     approved: { color: "green", label: "APPROVED" },
     denied: { color: "red", label: "DENIED" },
     diff: { color: "cyan", label: "DIFF" },

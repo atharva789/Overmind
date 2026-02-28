@@ -1,40 +1,21 @@
-import { jsxs as _jsxs, jsx as _jsx } from "react/jsx-runtime";
-/**
- * Purpose: Fixed-width panel listing all party members and their status.
- *
- * High-level behavior: Renders a vertical list of members. Host is
- * prefixed with ★. Each member shows their username (truncated to fit)
- * and their current status on a second line, colored by status type.
- * Width is constrained to at least 16 columns.
- *
- * Assumptions:
- *  - members list reflects authoritative AppState; no local mutation.
- *
- * Invariants:
- *  - Prompt content is never displayed here.
- *  - Exactly one member in the list has isHost: true.
- */
-import { Box, Text } from "ink";
-import figures from "figures";
-const STATUS_COLOR = {
+import { jsx as _jsx, jsxs as _jsxs } from "react/jsx-runtime";
+import { Box, Text, useStdout } from "ink";
+const STATUS_COLORS = {
     idle: "green",
     typing: "yellow",
     queued: "blue",
+    "awaiting review": "magenta",
     executing: "cyan",
-    reviewing: "magenta",
 };
-function truncate(s, max) {
-    return s.length <= max ? s : s.slice(0, max - 1) + "…";
-}
-export function PartyPanel({ members, width }) {
-    const panelWidth = Math.max(width, 16);
-    // Reserve space: 2 chars for prefix (★ or space + space)
-    const nameMax = panelWidth - 4;
-    return (_jsx(Box, { flexDirection: "column", width: panelWidth, borderStyle: "single", borderRight: true, borderLeft: false, borderTop: false, borderBottom: false, children: members.map((m) => {
-            const prefix = m.isHost ? figures.star : " ";
-            const name = truncate(m.username, nameMax);
-            const statusColor = STATUS_COLOR[m.status];
-            return (_jsxs(Box, { flexDirection: "column", marginBottom: 1, children: [_jsxs(Text, { children: [_jsxs(Text, { color: m.isHost ? "magenta" : undefined, bold: m.isHost, children: [prefix, " "] }), _jsx(Text, { children: name })] }), _jsxs(Text, { color: statusColor, children: ["  ", m.status] })] }, m.username));
-        }) }));
+export default function PartyPanel({ members }) {
+    const { stdout } = useStdout();
+    const termWidth = stdout?.columns ?? 80;
+    // Shrink width if terminal is small
+    const panelWidth = termWidth < 60 ? 18 : 24;
+    return (_jsxs(Box, { flexDirection: "column", width: panelWidth, borderStyle: "single", borderColor: "gray", paddingX: 1, children: [_jsx(Text, { bold: true, color: "white", children: "Members" }), members.map((member, idx) => {
+                const prefix = member.isHost ? "★" : " ";
+                const statusColor = STATUS_COLORS[member.status] ?? "gray";
+                return (_jsxs(Text, { wrap: "truncate", children: [_jsxs(Text, { color: "gray", children: ["[", idx + 1, "]"] }), _jsx(Text, { color: "yellow", children: prefix }), _jsx(Text, { color: member.isHost ? "yellow" : "white", children: member.username }), _jsxs(Text, { color: statusColor, dimColor: true, children: [" (", member.status, ")"] })] }, member.username));
+            })] }));
 }
 //# sourceMappingURL=PartyPanel.js.map

@@ -1,3 +1,8 @@
+// Purpose: Run the WebSocket server and coordinate party workflows.
+// Behavior: Validates joins, routes messages, and queues execution.
+// Assumptions: Clients send validated messages matching shared protocol.
+// Invariants: Each party has one host and prompt content stays private.
+
 import { WebSocketServer, WebSocket } from "ws";
 import { customAlphabet } from "nanoid";
 import { Party } from "./party.js";
@@ -13,8 +18,8 @@ import {
     MAX_MEMBERS_DEFAULT,
     ErrorCode,
 } from "../shared/constants.js";
-import { evaluatePrompt, greenlightLog } from "./greenlight/agent.js";
 import { executePromptChanges } from "./execution/agent.js";
+import { validateJoinRepository } from "./repository.js";
 
 const generateConnectionId = customAlphabet(
     "abcdefghijklmnopqrstuvwxyz0123456789",
@@ -26,7 +31,6 @@ const generatePartyCode = customAlphabet(PARTY_CODE_ALPHABET, PARTY_CODE_LENGTH)
 // ─── State ───
 
 const parties: Map<string, Party> = new Map();
-const evalQueues: Map<string, Promise<void>> = new Map();
 const execQueues: Map<string, Promise<void>> = new Map();
 const pendingParties: Map<string, string> = new Map();
 
@@ -42,6 +46,15 @@ function log(msg: string, partyCode?: string): void {
     const ts = new Date().toISOString();
     const prefix = partyCode ? `[${ts}] [${partyCode}]` : `[${ts}]`;
     console.log(`${prefix} ${msg}`);
+}
+
+function executionLog(
+    partyCode: string,
+    promptId: string,
+    module: string,
+    message: string
+): void {
+    log(`[${module}] [${promptId}] ${message}`, partyCode);
 }
 
 // ─── Public API ───
@@ -130,12 +143,49 @@ export function startServer(): WebSocketServer {
         onJoined: (party: Party) => void
     ): void {
         clearTimeout(timeout);
-        const { partyCode, username } = msg.payload;
+        const { partyCode, username, repository } = msg.payload;
 
         // Reserved party — first joiner becomes host
         if (pendingParties.has(partyCode)) {
+            const repositoryCheck = validateJoinRepository(repository);
+            if (!repositoryCheck.ok) {
+                const repositoryError =
+                    repositoryCheck.errorMessage ?? "Invalid repository";
+                const repositoryCode =
+                    repositoryCheck.errorCode ?? ErrorCode.REPO_INVALID;
+
+                log(`Join rejected: ${repositoryError}`, partyCode);
+                sendRaw(ws, {
+                    type: "error",
+                    payload: {
+                        message: repositoryError,
+                        code: repositoryCode,
+                    },
+                });
+                ws.close();
+                return;
+            }
+
+            const normalizedRepository = repositoryCheck.repository;
+            if (!normalizedRepository) {
+                sendRaw(ws, {
+                    type: "error",
+                    payload: {
+                        message: "Repository validation failed.",
+                        code: ErrorCode.REPO_INVALID,
+                    },
+                });
+                ws.close();
+                return;
+            }
+
             pendingParties.delete(partyCode);
-            const party = new Party(connectionId, ws, username);
+            const party = new Party(
+                connectionId,
+                ws,
+                username,
+                normalizedRepository
+            );
             (party as { code: string }).code = partyCode;
             parties.set(partyCode, party);
             log(`${username} created and joined as host`, partyCode);
@@ -152,7 +202,7 @@ export function startServer(): WebSocketServer {
             // Send system status
             party.sendTo(connectionId, {
                 type: "system-status",
-                payload: { greenlightAvailable: true, executionBackendAvailable: true },
+                payload: { executionBackendAvailable: true },
             });
 
             onJoined(party);
@@ -164,6 +214,28 @@ export function startServer(): WebSocketServer {
             sendRaw(ws, {
                 type: "error",
                 payload: { message: "Party not found. Check the code and try again.", code: ErrorCode.PARTY_NOT_FOUND },
+            });
+            ws.close();
+            return;
+        }
+
+        const repositoryCheck = validateJoinRepository(
+            repository,
+            party.repository
+        );
+        if (!repositoryCheck.ok) {
+            const repositoryError =
+                repositoryCheck.errorMessage ?? "Invalid repository";
+            const repositoryCode =
+                repositoryCheck.errorCode ?? ErrorCode.REPO_INVALID;
+
+            log(`Join rejected: ${repositoryError}`, partyCode);
+            sendRaw(ws, {
+                type: "error",
+                payload: {
+                    message: repositoryError,
+                    code: repositoryCode,
+                },
             });
             ws.close();
             return;
@@ -194,7 +266,7 @@ export function startServer(): WebSocketServer {
         // Send system status to new member
         party.sendTo(connectionId, {
             type: "system-status",
-            payload: { greenlightAvailable: true, executionBackendAvailable: true },
+            payload: { executionBackendAvailable: true },
         });
 
         party.broadcast(
@@ -232,10 +304,17 @@ export function startServer(): WebSocketServer {
 
                 party.broadcast({
                     type: "member-status",
-                    payload: { username: entry.username, status: "awaiting greenlight" },
+                    payload: { username: entry.username, status: "awaiting review" },
                 });
 
-                enqueueEvaluation(party, connectionId, entry);
+                party.sendTo(party.hostId, {
+                    type: "host-review-request",
+                    payload: {
+                        promptId: entry.promptId,
+                        username: entry.username,
+                        content: entry.content,
+                    },
+                });
                 break;
             }
 
@@ -344,7 +423,6 @@ export function startServer(): WebSocketServer {
                 m.ws.close();
             }
             parties.delete(party.code);
-            evalQueues.delete(party.code);
             execQueues.delete(party.code);
         } else {
             party.broadcast({
@@ -356,91 +434,6 @@ export function startServer(): WebSocketServer {
                 payload: { username, event: "disconnected", timestamp: Date.now() },
             });
         }
-    }
-
-    // ─── Sequential evaluation queue per party ───
-
-    function enqueueEvaluation(
-        party: Party,
-        connectionId: string,
-        entry: PromptEntry
-    ): void {
-        const partyCode = party.code;
-        const prev = evalQueues.get(partyCode) ?? Promise.resolve();
-
-        const next = prev.then(async () => {
-            if (!parties.has(partyCode)) return;
-
-            try {
-                const concurrent = party.promptQueue.filter(
-                    (p) => p.promptId !== entry.promptId
-                );
-
-                const result = await evaluatePrompt(entry, concurrent, partyCode);
-                if (!parties.has(partyCode)) return;
-
-                if (result.verdict === "greenlit") {
-                    party.sendTo(connectionId, {
-                        type: "prompt-greenlit",
-                        payload: { promptId: entry.promptId, reasoning: result.reasoning },
-                    });
-                    party.broadcast({
-                        type: "activity",
-                        payload: {
-                            username: entry.username,
-                            event: `'s prompt was greenlit ✓`,
-                            timestamp: Date.now(),
-                        },
-                    });
-
-                    party.broadcast({
-                        type: "member-status",
-                        payload: { username: entry.username, status: "executing" },
-                    });
-
-                    // Greenlit → auto-trigger execution simulation
-                    enqueueExecution(party, connectionId, entry);
-                } else {
-                    party.sendTo(connectionId, {
-                        type: "prompt-redlit",
-                        payload: {
-                            promptId: entry.promptId,
-                            reasoning: result.reasoning,
-                            conflicts: result.conflicts,
-                        },
-                    });
-                    party.broadcast({
-                        type: "activity",
-                        payload: {
-                            username: entry.username,
-                            event: `'s prompt was redlit, awaiting host review ⚠`,
-                            timestamp: Date.now(),
-                        },
-                    });
-
-                    party.broadcast({
-                        type: "member-status",
-                        payload: { username: entry.username, status: "awaiting review" },
-                    });
-
-                    // Send host-review-request with reasoning
-                    party.sendTo(party.hostId, {
-                        type: "host-review-request",
-                        payload: {
-                            promptId: entry.promptId,
-                            username: entry.username,
-                            content: entry.content,
-                            reasoning: result.reasoning,
-                            conflicts: result.conflicts,
-                        },
-                    });
-                }
-            } catch (err) {
-                log(`Evaluation error: ${err instanceof Error ? err.message : String(err)}`, partyCode);
-            }
-        });
-
-        evalQueues.set(partyCode, next);
     }
 
     // ─── Sequential execution queue per party (Phase 5 real execution) ───
@@ -476,7 +469,11 @@ export function startServer(): WebSocketServer {
             });
 
             // Call real execution agent
-            const result = await executePromptChanges(entry, partyCode, greenlightLog);
+            const result = await executePromptChanges(
+                entry,
+                partyCode,
+                executionLog
+            );
 
             if (!parties.has(partyCode)) return;
 
@@ -563,6 +560,5 @@ export function shutdownAllParties(): void {
     }
     parties.clear();
     pendingParties.clear();
-    evalQueues.clear();
     execQueues.clear();
 }

@@ -1,3 +1,8 @@
+// Purpose: Define validated client/server message schemas for Overmind.
+// Behavior: Uses Zod discriminated unions and parsers to enforce contracts.
+// Assumptions: All messages are JSON-serializable and validated on receipt.
+// Invariants: Invalid messages return null and are never processed.
+
 import { z } from "zod";
 
 // ─── Shared Types ───
@@ -18,6 +23,7 @@ const JoinMessage = z.object({
     payload: z.object({
         partyCode: z.string(),
         username: z.string(),
+        repository: z.string(),
     }),
 });
 
@@ -88,23 +94,6 @@ const PromptQueuedMessage = z.object({
     }),
 });
 
-const PromptGreenlitMessage = z.object({
-    type: z.literal("prompt-greenlit"),
-    payload: z.object({
-        promptId: z.string(),
-        reasoning: z.string(),
-    }),
-});
-
-const PromptRedlitMessage = z.object({
-    type: z.literal("prompt-redlit"),
-    payload: z.object({
-        promptId: z.string(),
-        reasoning: z.string(),
-        conflicts: z.array(z.string()),
-    }),
-});
-
 const PromptApprovedMessage = z.object({
     type: z.literal("prompt-approved"),
     payload: z.object({
@@ -126,8 +115,6 @@ const HostReviewRequestMessage = z.object({
         promptId: z.string(),
         username: z.string(),
         content: z.string(),
-        reasoning: z.string(),
-        conflicts: z.array(z.string()),
     }),
 });
 
@@ -185,7 +172,6 @@ const ExecutionCompleteMessage = z.object({
 const SystemStatusMessage = z.object({
     type: z.literal("system-status"),
     payload: z.object({
-        greenlightAvailable: z.boolean(),
         executionBackendAvailable: z.boolean(),
     }),
 });
@@ -214,8 +200,6 @@ export const ServerMessageSchema = z.discriminatedUnion("type", [
     MemberJoinedMessage,
     MemberLeftMessage,
     PromptQueuedMessage,
-    PromptGreenlitMessage,
-    PromptRedlitMessage,
     PromptApprovedMessage,
     PromptDeniedMessage,
     HostReviewRequestMessage,

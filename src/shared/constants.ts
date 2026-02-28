@@ -1,3 +1,8 @@
+// Purpose: Centralize shared constants and error codes.
+// Behavior: Exposes server/client configuration and status identifiers.
+// Assumptions: Constants are immutable and referenced across modules.
+// Invariants: Values remain deterministic and environment-agnostic.
+
 // ─── Error codes ───
 export const ErrorCode = {
     PARTY_NOT_FOUND: "PARTY_NOT_FOUND",
@@ -7,6 +12,8 @@ export const ErrorCode = {
     USERNAME_CONFLICT: "USERNAME_CONFLICT",
     PARTY_FULL: "PARTY_FULL",
     HOST_DISCONNECTED: "HOST_DISCONNECTED",
+    REPO_INVALID: "REPO_INVALID",
+    REPO_MISMATCH: "REPO_MISMATCH",
 } as const;
 
 export type ErrorCodeValue = (typeof ErrorCode)[keyof typeof ErrorCode];
@@ -24,13 +31,5 @@ export const DISCONNECT_TIMEOUT_MS = 30000;
 export const RECONNECT_INITIAL_MS = 1000;
 export const RECONNECT_MAX_MS = 10000;
 
-// ─── Greenlight ───
-export const GREENLIGHT_BACKEND_DEFAULT = "glm";
+// ─── Execution ───
 export const GEMINI_MODEL_DEFAULT = "gemini-2.0-flash";
-export const GLM_MODEL_DEFAULT = "glm-5.0";
-export const MAX_TOOL_ROUNDS = 5;
-export const EVAL_TIMEOUT_MS = 30000;
-export const MAX_FILE_READ_LINES = 500;
-export const MAX_SEARCH_RESULTS = 50;
-export const LOG_TRUNCATE_CHARS = 200;
-export const MAX_CONTEXT_PAYLOAD_CHARS = 20000;

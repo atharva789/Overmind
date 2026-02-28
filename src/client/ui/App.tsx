@@ -1,3 +1,8 @@
+// Purpose: Render the main Ink-based TUI and route server events.
+// Behavior: Maintains app state, handles input, and displays panels.
+// Assumptions: Session provides a validated repository for joining.
+// Invariants: Prompt content is only rendered for the submitter or host.
+
 import React, { useReducer, useEffect, useCallback } from "react";
 import { Box, Text, useApp, useInput, useStdout } from "ink";
 import type { Connection } from "../connection.js";
@@ -31,7 +36,6 @@ interface AppState {
     execution: ExecutionState | null;
     memberExecutions: Record<string, ExecutionState>;
     viewingMember: string | null;
-    greenlightAvailable: boolean;
     executionBackendAvailable: boolean;
     errorMessage: string | null;
     partyEnded: boolean;
@@ -50,7 +54,6 @@ const initialState: AppState = {
     execution: null,
     memberExecutions: {},
     viewingMember: null,
-    greenlightAvailable: true,
     executionBackendAvailable: true,
     errorMessage: null,
     partyEnded: false,
@@ -67,11 +70,14 @@ type Action =
     | { type: "MEMBER_LEFT"; username: string }
     | { type: "MEMBER_STATUS"; username: string; status: string }
     | { type: "PROMPT_QUEUED"; promptId: string; position: number }
-    | { type: "PROMPT_GREENLIT"; promptId: string; reasoning: string }
-    | { type: "PROMPT_REDLIT"; promptId: string; reasoning: string; conflicts: string[] }
     | { type: "PROMPT_APPROVED"; promptId: string }
     | { type: "PROMPT_DENIED"; promptId: string; reason: string }
-    | { type: "HOST_REVIEW_REQUEST"; promptId: string; username: string; content: string; reasoning: string; conflicts: string[] }
+    | {
+          type: "HOST_REVIEW_REQUEST";
+          promptId: string;
+          username: string;
+          content: string;
+      }
     | { type: "ACTIVITY"; username: string; event: string; timestamp: number }
     | { type: "ERROR"; message: string; code: string }
     | { type: "LOCAL_PROMPT_SUBMITTED"; promptId: string }
@@ -81,7 +87,7 @@ type Action =
     | { type: "EXECUTION_COMPLETE"; promptId: string; files: FileChange[]; summary: string }
     | { type: "MEMBER_EXECUTION_UPDATE"; username: string; promptId: string; stage: string }
     | { type: "MEMBER_EXECUTION_COMPLETE"; username: string; promptId: string; files: FileChange[]; summary: string }
-    | { type: "SYSTEM_STATUS"; greenlightAvailable: boolean; executionBackendAvailable: boolean }
+    | { type: "SYSTEM_STATUS"; executionBackendAvailable: boolean }
     | { type: "SET_VIEWING"; username: string | null };
 
 function addOutput(
@@ -159,23 +165,6 @@ function reducer(state: AppState, action: Action): AppState {
                 outputs: addOutput(state.outputs, action.promptId, "queued", `Position: ${action.position}`),
             };
 
-        case "PROMPT_GREENLIT":
-            return {
-                ...state,
-                outputs: addOutput(state.outputs, action.promptId, "greenlit", action.reasoning),
-            };
-
-        case "PROMPT_REDLIT":
-            return {
-                ...state,
-                outputs: addOutput(
-                    state.outputs,
-                    action.promptId,
-                    "redlit",
-                    `${action.reasoning}`
-                ),
-            };
-
         case "PROMPT_APPROVED":
             return {
                 ...state,
@@ -199,8 +188,6 @@ function reducer(state: AppState, action: Action): AppState {
                         promptId: action.promptId,
                         username: action.username,
                         content: action.content,
-                        reasoning: action.reasoning,
-                        conflicts: action.conflicts,
                     },
                 ],
             };
@@ -277,7 +264,6 @@ function reducer(state: AppState, action: Action): AppState {
         case "SYSTEM_STATUS":
             return {
                 ...state,
-                greenlightAvailable: action.greenlightAvailable,
                 executionBackendAvailable: action.executionBackendAvailable,
             };
 
@@ -291,7 +277,12 @@ function reducer(state: AppState, action: Action): AppState {
             };
 
         case "ERROR":
-            if (action.code === "HOST_DISCONNECTED" || action.code === "PARTY_ENDED") {
+            if (
+                action.code === "HOST_DISCONNECTED"
+                || action.code === "PARTY_ENDED"
+                || action.code === "REPO_INVALID"
+                || action.code === "REPO_MISMATCH"
+            ) {
                 return { ...state, partyEnded: true, errorMessage: action.message };
             }
             return { ...state, errorMessage: action.message };
@@ -390,21 +381,6 @@ export default function App({ connection, session }: AppProps): React.ReactEleme
                         position: msg.payload.position,
                     });
                     break;
-                case "prompt-greenlit":
-                    dispatch({
-                        type: "PROMPT_GREENLIT",
-                        promptId: msg.payload.promptId,
-                        reasoning: msg.payload.reasoning,
-                    });
-                    break;
-                case "prompt-redlit":
-                    dispatch({
-                        type: "PROMPT_REDLIT",
-                        promptId: msg.payload.promptId,
-                        reasoning: msg.payload.reasoning,
-                        conflicts: msg.payload.conflicts,
-                    });
-                    break;
                 case "prompt-approved":
                     dispatch({ type: "PROMPT_APPROVED", promptId: msg.payload.promptId });
                     break;
@@ -421,8 +397,6 @@ export default function App({ connection, session }: AppProps): React.ReactEleme
                         promptId: msg.payload.promptId,
                         username: msg.payload.username,
                         content: msg.payload.content,
-                        reasoning: msg.payload.reasoning,
-                        conflicts: msg.payload.conflicts,
                     });
                     break;
                 case "execution-queued":
@@ -459,7 +433,6 @@ export default function App({ connection, session }: AppProps): React.ReactEleme
                 case "system-status":
                     dispatch({
                         type: "SYSTEM_STATUS",
-                        greenlightAvailable: msg.payload.greenlightAvailable,
                         executionBackendAvailable: msg.payload.executionBackendAvailable,
                     });
                     break;
@@ -587,7 +560,6 @@ export default function App({ connection, session }: AppProps): React.ReactEleme
                 partyCode={state.partyCode}
                 memberCount={state.members.length}
                 connectionStatus={state.connectionStatus}
-                greenlightAvailable={state.greenlightAvailable}
                 executionBackendAvailable={state.executionBackendAvailable}
             />
             <Box flexDirection="row" flexGrow={1}>
