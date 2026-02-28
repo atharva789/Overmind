@@ -1,3 +1,9 @@
+/**
+ * Purpose: Define the client/server protocol and validation schemas.
+ * High-level behavior: Exposes Zod schemas and type-safe message parsing.
+ * Assumptions: Messages are JSON objects with { type, payload } shape.
+ * Invariants: Invalid messages are rejected and never thrown.
+ */
 import { z } from "zod";
 // ─── Shared Types ───
 export const FileChangeSchema = z.object({
@@ -160,6 +166,14 @@ const SystemStatusMessage = z.object({
         executionBackendAvailable: z.boolean(),
     }),
 });
+const SandboxStatusMessage = z.object({
+    type: z.literal("sandbox-status"),
+    payload: z.object({
+        promptId: z.string(),
+        sandboxId: z.string(),
+        status: z.string(),
+    }),
+});
 const MemberExecutionUpdateMessage = z.object({
     type: z.literal("member-execution-update"),
     payload: z.object({
@@ -194,6 +208,7 @@ export const ServerMessageSchema = z.discriminatedUnion("type", [
     ExecutionUpdateMessage,
     ExecutionCompleteMessage,
     SystemStatusMessage,
+    SandboxStatusMessage,
     MemberExecutionUpdateMessage,
     MemberExecutionCompleteMessage,
 ]);

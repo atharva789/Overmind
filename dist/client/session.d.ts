@@ -2,6 +2,7 @@ import { Connection } from "./connection.js";
 export interface SessionOptions {
     host?: string;
     port?: number;
+    serverUrl?: string;
     partyCode: string;
     username: string;
     /** If true, skip console.log handlers (UI mode handles display) */

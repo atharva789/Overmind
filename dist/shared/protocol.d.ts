@@ -1,3 +1,9 @@
+/**
+ * Purpose: Define the client/server protocol and validation schemas.
+ * High-level behavior: Exposes Zod schemas and type-safe message parsing.
+ * Assumptions: Messages are JSON objects with { type, payload } shape.
+ * Invariants: Invalid messages are rejected and never thrown.
+ */
 import { z } from "zod";
 export declare const FileChangeSchema: z.ZodObject<{
     path: z.ZodString;
@@ -562,6 +568,35 @@ export declare const ServerMessageSchema: z.ZodDiscriminatedUnion<"type", [z.Zod
     payload: {
         greenlightAvailable: boolean;
         executionBackendAvailable: boolean;
+    };
+}>, z.ZodObject<{
+    type: z.ZodLiteral<"sandbox-status">;
+    payload: z.ZodObject<{
+        promptId: z.ZodString;
+        sandboxId: z.ZodString;
+        status: z.ZodString;
+    }, "strip", z.ZodTypeAny, {
+        status: string;
+        promptId: string;
+        sandboxId: string;
+    }, {
+        status: string;
+        promptId: string;
+        sandboxId: string;
+    }>;
+}, "strip", z.ZodTypeAny, {
+    type: "sandbox-status";
+    payload: {
+        status: string;
+        promptId: string;
+        sandboxId: string;
+    };
+}, {
+    type: "sandbox-status";
+    payload: {
+        status: string;
+        promptId: string;
+        sandboxId: string;
     };
 }>, z.ZodObject<{
     type: z.ZodLiteral<"member-execution-update">;

@@ -1,4 +1,5 @@
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import { GoogleGenAI } from "@google/genai";
+import type { Part } from "@google/genai";
 import type { PromptEntry } from "../party.js";
 import { EXECUTION_TOOL_DECLARATIONS, WorkspaceContext, FileChange } from "./tools.js";
 import { GEMINI_MODEL_DEFAULT } from "../../shared/constants.js";
@@ -37,11 +38,7 @@ export async function executePromptChanges(
     }
 
     const modelName = process.env["OVERMIND_MODEL"] ?? GEMINI_MODEL_DEFAULT;
-    const genAI = new GoogleGenerativeAI(apiKey);
-    const model = genAI.getGenerativeModel({
-        model: modelName,
-        tools: [{ functionDeclarations: EXECUTION_TOOL_DECLARATIONS }],
-    });
+    const ai = new GoogleGenAI({ apiKey });
 
     const systemPrompt = buildSystemPrompt();
     const userMessage = `User Request:\n"${entry.content}"\n\nScope hint: ${entry.scope?.join(", ") ?? "unscoped"}`;
@@ -49,35 +46,34 @@ export async function executePromptChanges(
     const context = new WorkspaceContext();
 
     try {
-        const chat = model.startChat({
-            systemInstruction: systemPrompt,
+        const chat = ai.chats.create({
+            model: modelName,
+            config: {
+                systemInstruction: systemPrompt,
+                tools: [{ functionDeclarations: EXECUTION_TOOL_DECLARATIONS }],
+            },
         });
 
         let response = await withTimeout(
-            chat.sendMessage(userMessage),
+            chat.sendMessage({ message: userMessage }),
             EXECUTION_TIMEOUT_MS
         );
         let summaryText = "";
 
         for (let round = 0; round < MAX_EXECUTION_ROUNDS; round++) {
-            const candidate = response.response.candidates?.[0];
-            if (!candidate) break;
+            const functionCalls = response.functionCalls;
 
-            const parts = candidate.content?.parts ?? [];
-            const functionCalls = parts.filter((p: any) => p.functionCall);
-
-            if (functionCalls.length === 0) {
+            if (!functionCalls || functionCalls.length === 0) {
                 // If model just replies with text, we consider it done.
-                summaryText = response.response.text();
+                summaryText = response.text ?? "";
                 break;
             }
 
             let finished = false;
-            const toolResults = functionCalls.map((part: any) => {
-                const fc = part.functionCall!;
+            const functionResponseParts: Part[] = functionCalls.map((fc) => {
                 const args = (fc.args ?? {}) as Record<string, string>;
 
-                log(partyCode, entry.promptId, "execution", `tool:${fc.name}(...)`);
+                log(partyCode, entry.promptId, "execution", `tool:${fc.name ?? ""}(...)`);
 
                 if (fc.name === "finish_execution") {
                     finished = true;
@@ -87,11 +83,11 @@ export async function executePromptChanges(
                     };
                 }
 
-                const res = context.executeTool(fc.name, args);
+                const res = context.executeTool(fc.name ?? "", args);
 
                 return {
                     functionResponse: {
-                        name: fc.name,
+                        name: fc.name ?? "",
                         // Convert errors to string result so Gemini sees them
                         response: { result: res.success ? (res.result || "OK") : (res.error || "Error") },
                     },
@@ -101,7 +97,7 @@ export async function executePromptChanges(
             if (finished) break;
 
             response = await withTimeout(
-                chat.sendMessage(toolResults),
+                chat.sendMessage({ message: functionResponseParts }),
                 EXECUTION_TIMEOUT_MS
             );
         }

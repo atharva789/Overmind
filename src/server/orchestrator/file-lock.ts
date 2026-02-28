@@ -6,6 +6,7 @@
  */
 
 import path from "node:path";
+import { LOCK_TIMEOUT_MS } from "../../shared/constants.js";
 
 export interface FileLock {
     promptId: string;
@@ -18,11 +19,19 @@ export interface LockResult {
     conflicts: FileLock[];
 }
 
+/**
+ * Normalize paths for overlap checks and stable comparisons.
+ * Does not validate filesystem existence.
+ */
 function normalizePath(inputPath: string): string {
     const normalized = path.normalize(inputPath).replace(/\\/g, "/");
     return normalized.replace(/\/+$/u, "");
 }
 
+/**
+ * Detect whether two normalized paths overlap by prefix.
+ * Does not resolve symlinks or check filesystem state.
+ */
 function pathsOverlap(left: string, right: string): boolean {
     if (left === right) return true;
     const leftPrefix = left.endsWith("/") ? left : `${left}/`;
@@ -31,13 +40,25 @@ function pathsOverlap(left: string, right: string): boolean {
         || rightPrefix.startsWith(leftPrefix);
 }
 
+/**
+ * Normalize and de-duplicate a path list.
+ * Does not sort output to preserve insertion order.
+ */
 function normalizePaths(paths: string[]): string[] {
     const unique = new Set<string>();
-    for (const p of paths) {
-        if (!p) continue;
-        unique.add(normalizePath(p));
+    for (const entry of paths) {
+        if (!entry) continue;
+        unique.add(normalizePath(entry));
     }
     return [...unique];
+}
+
+/**
+ * Determine if a lock has exceeded its timeout.
+ * Does not mutate the lock or update timestamps.
+ */
+function isLockExpired(lock: FileLock, now: number): boolean {
+    return now - lock.acquiredAt > LOCK_TIMEOUT_MS;
 }
 
 export class FileLockManager {
@@ -49,6 +70,7 @@ export class FileLockManager {
      * Edge cases: Empty paths always succeed without storing a lock.
      */
     tryAcquire(promptId: string, paths: string[]): LockResult {
+        this.pruneExpired();
         const normalized = normalizePaths(paths);
         if (normalized.length === 0) {
             return { acquired: true, conflicts: [] };
@@ -78,9 +100,10 @@ export class FileLockManager {
 
     /**
      * Return conflicts for the provided paths.
-     * Does not mutate internal state.
+     * Does not mutate internal state beyond pruning.
      */
     getConflicts(paths: string[]): FileLock[] {
+        this.pruneExpired();
         const normalized = normalizePaths(paths);
         const conflicts: FileLock[] = [];
 
@@ -102,5 +125,18 @@ export class FileLockManager {
      */
     getLock(promptId: string): FileLock | undefined {
         return this.locks.get(promptId);
+    }
+
+    /**
+     * Remove expired locks based on LOCK_TIMEOUT_MS.
+     * Does not affect active locks.
+     */
+    private pruneExpired(): void {
+        const now = Date.now();
+        for (const [promptId, lock] of this.locks) {
+            if (isLockExpired(lock, now)) {
+                this.locks.delete(promptId);
+            }
+        }
     }
 }

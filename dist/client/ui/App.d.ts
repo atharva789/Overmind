@@ -4,6 +4,7 @@ import type { Session } from "../session.js";
 interface AppProps {
     connection: Connection;
     session: Session;
+    inviteCode?: string;
 }
-export default function App({ connection, session }: AppProps): React.ReactElement;
+export default function App({ connection, session, inviteCode }: AppProps): React.ReactElement;
 export {};

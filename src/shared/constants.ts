@@ -17,9 +17,8 @@ export const ErrorCode = {
     EXECUTION_FAILED: "EXECUTION_FAILED",
 } as const;
 
-export type ErrorCodeValue = (typeof ErrorCode)[
-    keyof typeof ErrorCode
-];
+export type ErrorCodeValue =
+    (typeof ErrorCode)[keyof typeof ErrorCode];
 
 // ─── Defaults ───
 export const DEFAULT_PORT = 4444;

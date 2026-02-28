@@ -4,9 +4,11 @@ import { Command } from "commander";
 import os from "node:os";
 import React from "react";
 import { render } from "ink";
+import ngrok from "ngrok";
 import { startServer, reserveParty, shutdownAllParties, setMaxMembers } from "./server/index.js";
 import { Session } from "./client/session.js";
 import { DEFAULT_PORT, MAX_MEMBERS_DEFAULT } from "./shared/constants.js";
+import { decodeInviteCode, encodeInviteCode, isInviteCode } from "./shared/invite.js";
 import App from "./client/ui/App.js";
 
 const program = new Command();
@@ -35,15 +37,36 @@ program
 
         wss.on("listening", async () => {
             const code = reserveParty(username);
+            let inviteCode: string | null = null;
+            let publicUrl: string | null = null;
+
+            try {
+                publicUrl = await startNgrokTunnel(port);
+                inviteCode = encodeInviteCode({
+                    partyCode: code,
+                    serverUrl: publicUrl,
+                });
+            } catch (error) {
+                const missingToken = !process.env["NGROK_AUTHTOKEN"];
+                const hint = missingToken ? " Set NGROK_AUTHTOKEN to enable public tunnels." : "";
+                console.log(`[ngrok] Failed to start tunnel.${hint}`);
+                if (error instanceof Error) {
+                    console.log(`[ngrok] ${error.message}`);
+                }
+            }
 
             if (isTTY) {
                 // Show banner for 2 seconds
-                showBanner(code, maxMem);
+                showBanner(code, maxMem, inviteCode ?? undefined);
                 await sleep(2000);
                 // Clear banner before rendering TUI
                 process.stdout.write("\x1b[2J\x1b[H");
             } else {
                 console.log(`Party started! Code: ${code} (share this with your team)`);
+                if (inviteCode) {
+                    console.log(`Invite code: ${inviteCode}`);
+                    console.log(`Public URL: ${publicUrl}`);
+                }
                 console.log(`Waiting for members...`);
             }
 
@@ -61,6 +84,7 @@ program
                     React.createElement(App, {
                         connection: session.connection,
                         session,
+                        inviteCode: inviteCode ?? undefined,
                     })
                 );
 
@@ -68,6 +92,7 @@ program
                     inkInstance.unmount();
                     shutdownAllParties();
                     setTimeout(() => {
+                        void stopNgrokTunnel(publicUrl);
                         wss.close();
                         process.exit(0);
                     }, 1000);
@@ -77,6 +102,7 @@ program
                     console.log("\nShutting down...");
                     shutdownAllParties();
                     setTimeout(() => {
+                        void stopNgrokTunnel(publicUrl);
                         wss.close();
                         process.exit(0);
                     }, 1000);
@@ -87,8 +113,8 @@ program
 
 program
     .command("join")
-    .description("Join an existing party")
-    .argument("<code>", "Party code to join")
+    .description("Join an existing party (party code or invite code)")
+    .argument("<code>", "Party code or invite code to join")
     .option("-s, --server <host>", "Server host", "localhost")
     .option("-p, --port <port>", "Server port", String(DEFAULT_PORT))
     .option("-u, --username <name>", "Username")
@@ -101,10 +127,23 @@ program
             const port = Number(opts.port);
             const isTTY = !!process.stdout.isTTY;
 
+            const invite = decodeInviteCode(code);
+            if (!invite && isInviteCode(code)) {
+                console.error("Invalid invite code.");
+                process.exit(1);
+            }
+
+            const partyCode = invite ? invite.partyCode : code.toUpperCase();
+            const serverInput = invite
+                ? invite.serverUrl
+                : buildServerInput(opts.server, port);
+            const serverUrl = normalizeServerUrl(serverInput);
+
             const session = new Session({
                 host: opts.server,
                 port,
-                partyCode: code.toUpperCase(),
+                serverUrl,
+                partyCode,
                 username,
                 silent: isTTY,
             });
@@ -150,7 +189,7 @@ function sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function showBanner(code: string, maxMem: number): void {
+function showBanner(code: string, maxMem: number, inviteCode?: string): void {
     const lines = [
         "╔═══════════════════════════════════╗",
         "║         O V E R M I N D           ║",
@@ -165,4 +204,69 @@ function showBanner(code: string, maxMem: number): void {
         console.log(`  ${line}`);
     }
     console.log("");
+    if (code) {
+        console.log(`  Party code: ${code}`);
+    }
+    if (inviteCode) {
+        console.log(`  Invite code: ${inviteCode}`);
+    }
+    console.log("");
+}
+
+function buildServerInput(host: string, port: number): string {
+    const trimmed = host.trim();
+    if (
+        trimmed.startsWith("ws://") ||
+        trimmed.startsWith("wss://") ||
+        trimmed.startsWith("http://") ||
+        trimmed.startsWith("https://")
+    ) {
+        return trimmed;
+    }
+    return `${trimmed}:${port}`;
+}
+
+function normalizeServerUrl(input: string): string {
+    const trimmed = input.trim().replace(/\/$/, "");
+    if (trimmed.startsWith("ws://") || trimmed.startsWith("wss://")) {
+        return trimmed;
+    }
+    if (trimmed.startsWith("http://")) {
+        return `ws://${trimmed.slice("http://".length)}`;
+    }
+    if (trimmed.startsWith("https://")) {
+        return `wss://${trimmed.slice("https://".length)}`;
+    }
+    return `ws://${trimmed}`;
+}
+
+async function startNgrokTunnel(port: number): Promise<string> {
+    const authtoken = process.env["NGROK_AUTHTOKEN"];
+    const tunnel = await ngrok.connect({
+        addr: port,
+        authtoken,
+    });
+    const url =
+        typeof tunnel === "string"
+            ? tunnel
+            : typeof (tunnel as { url?: () => string }).url === "function"
+                ? (tunnel as { url: () => string }).url()
+                : String(tunnel);
+    return url.replace(/\/$/, "");
+}
+
+async function stopNgrokTunnel(publicUrl: string | null): Promise<void> {
+    if (!publicUrl) {
+        return;
+    }
+    try {
+        await ngrok.disconnect(publicUrl);
+    } catch {
+        // Ignore cleanup errors
+    }
+    try {
+        await ngrok.kill();
+    } catch {
+        // Ignore cleanup errors
+    }
 }

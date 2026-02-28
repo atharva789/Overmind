@@ -10,7 +10,13 @@ import path from "node:path";
 import { ALWAYS_SYNC_PATTERNS } from "../../shared/constants.js";
 import type { EvaluationResult } from "../greenlight/evaluate.js";
 
-const EXCLUDED_DIRS = new Set(["node_modules", ".git", "dist", ".overmind"]);
+const EXCLUDED_DIRS = new Set([
+    "node_modules",
+    ".git",
+    "dist",
+    ".overmind",
+    "modal-bridge",
+]);
 const MAX_LIST_DEPTH = 3;
 
 export interface FilePack {
@@ -35,7 +41,10 @@ function normalizeRelativePath(inputPath: string): string {
  * Resolve a relative path and reject escapes above project root.
  * Does not create directories or touch the filesystem.
  */
-function resolveSafePath(projectRoot: string, relPath: string): string | null {
+function resolveSafePath(
+    projectRoot: string,
+    relPath: string
+): string | null {
     const normalized = normalizeRelativePath(relPath);
     const absolute = path.resolve(projectRoot, normalized);
     if (!absolute.startsWith(projectRoot)) return null;
@@ -98,7 +107,12 @@ function walkFiles(
     for (const entry of entries) {
         if (entry.isDirectory()) {
             if (isExcludedDir(entry.name)) continue;
-            walkFiles(root, path.join(relative, entry.name), depth + 1, onFile);
+            walkFiles(
+                root,
+                path.join(relative, entry.name),
+                depth + 1,
+                onFile
+            );
         } else if (entry.isFile()) {
             const relPath = normalizeRelativePath(
                 path.join(relative, entry.name)

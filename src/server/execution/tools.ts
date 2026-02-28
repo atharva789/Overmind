@@ -2,16 +2,17 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { execSync } from "node:child_process";
-import { SchemaType, FunctionDeclaration } from "@google/generative-ai";
+import { Type } from "@google/genai";
+import type { FunctionDeclaration } from "@google/genai";
 
 export const EXECUTION_TOOL_DECLARATIONS: FunctionDeclaration[] = [
     {
         name: "read_file",
         description: "Read the contents of a file",
         parameters: {
-            type: SchemaType.OBJECT,
+            type: Type.OBJECT,
             properties: {
-                path: { type: SchemaType.STRING, description: "Path to the file relative to project root" }
+                path: { type: Type.STRING, description: "Path to the file relative to project root" }
             },
             required: ["path"]
         }
@@ -20,10 +21,10 @@ export const EXECUTION_TOOL_DECLARATIONS: FunctionDeclaration[] = [
         name: "write_file",
         description: "Write content to a file. Overwrites the file completely.",
         parameters: {
-            type: SchemaType.OBJECT,
+            type: Type.OBJECT,
             properties: {
-                path: { type: SchemaType.STRING, description: "Path to the file relative to project root" },
-                content: { type: SchemaType.STRING, description: "The complete new content to write to the file" }
+                path: { type: Type.STRING, description: "Path to the file relative to project root" },
+                content: { type: Type.STRING, description: "The complete new content to write to the file" }
             },
             required: ["path", "content"]
         }
@@ -32,9 +33,9 @@ export const EXECUTION_TOOL_DECLARATIONS: FunctionDeclaration[] = [
         name: "list_dir",
         description: "List the contents of a directory",
         parameters: {
-            type: SchemaType.OBJECT,
+            type: Type.OBJECT,
             properties: {
-                path: { type: SchemaType.STRING, description: "Path to the directory relative to project root (e.g. '.')" }
+                path: { type: Type.STRING, description: "Path to the directory relative to project root (e.g. '.')" }
             },
             required: ["path"]
         }
@@ -43,9 +44,9 @@ export const EXECUTION_TOOL_DECLARATIONS: FunctionDeclaration[] = [
         name: "finish_execution",
         description: "Call this when you have successfully completed the user's prompt",
         parameters: {
-            type: SchemaType.OBJECT,
+            type: Type.OBJECT,
             properties: {
-                summary: { type: SchemaType.STRING, description: "A summary of what you did" }
+                summary: { type: Type.STRING, description: "A summary of what you did" }
             },
             required: ["summary"]
         }

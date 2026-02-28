@@ -15,6 +15,6 @@ export interface FetchCodeArgs {
  * Never throws — returns a descriptive string.
  */
 export declare function fetchCode(args: FetchCodeArgs): string;
-import type { FunctionDeclaration } from "@google/generative-ai";
+import type { FunctionDeclaration } from "@google/genai";
 export declare const TOOL_DECLARATIONS: FunctionDeclaration[];
 export declare function executeTool(name: string, args: Record<string, string>): string;

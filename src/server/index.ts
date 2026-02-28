@@ -708,8 +708,7 @@ export function startServer(): WebSocketServer {
                 }
             } catch (err) {
                 log(
-                    `Evaluation error: ${
-                        err instanceof Error ? err.message : String(err)
+                    `Evaluation error: ${err instanceof Error ? err.message : String(err)
                     }`,
                     partyCode
                 );
@@ -979,10 +978,6 @@ function sendRaw(ws: WebSocket, message: ServerMessage): void {
     if (ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify(message));
     }
-}
-
-function sleep(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /**

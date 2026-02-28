@@ -1,4 +1,5 @@
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import { GoogleGenAI } from "@google/genai";
+import type { Part } from "@google/genai";
 import type { EvaluationResult } from "../evaluate.js";
 import { autoGreenlit, validateResult } from "../evaluate.js";
 import { executeTool, TOOL_DECLARATIONS } from "../tools.js";
@@ -63,12 +64,7 @@ export async function evaluateWithGemini(
     }
 
     const modelName = process.env["OVERMIND_MODEL"] ?? GEMINI_MODEL_DEFAULT;
-    const genAI = new GoogleGenerativeAI(apiKey);
-
-    const model = genAI.getGenerativeModel({
-        model: modelName,
-        tools: [{ functionDeclarations: TOOL_DECLARATIONS }],
-    });
+    const ai = new GoogleGenAI({ apiKey });
 
     const systemPrompt = buildSystemPrompt(overlapHint);
     const userMessage = `Evaluate this prompt:\n\n"${promptContent}"\n\nScope: ${promptScope?.join(", ") ?? "unscoped"}`;
@@ -76,48 +72,48 @@ export async function evaluateWithGemini(
     const toolCalls: Array<{ tool: string; args: Record<string, string>; result: string }> = [];
 
     try {
-        const chat = model.startChat({
-            systemInstruction: systemPrompt,
+        const chat = ai.chats.create({
+            model: modelName,
+            config: {
+                systemInstruction: systemPrompt,
+                tools: [{ functionDeclarations: TOOL_DECLARATIONS }],
+            },
         });
 
         let response = await withTimeout(
-            chat.sendMessage(userMessage),
+            chat.sendMessage({ message: userMessage }),
             EVAL_TIMEOUT_MS
         );
 
         for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
-            const candidate = response.response.candidates?.[0];
-            if (!candidate) break;
+            const functionCalls = response.functionCalls;
 
-            const parts = candidate.content?.parts ?? [];
-            const functionCalls = parts.filter((p) => p.functionCall);
-
-            if (functionCalls.length === 0) {
-                const text = response.response.text();
+            if (!functionCalls || functionCalls.length === 0) {
+                const text = response.text ?? "";
                 return parseGeminiResponse(text, toolCalls, partyCode, promptId, log);
             }
 
-            const toolResults = functionCalls.map((part) => {
-                const fc = part.functionCall!;
+            // Build function response parts
+            const functionResponseParts: Part[] = functionCalls.map((fc) => {
                 const args = (fc.args ?? {}) as Record<string, string>;
-                const result = executeTool(fc.name, args);
-                toolCalls.push({ tool: fc.name, args, result: result.slice(0, 500) });
+                const result = executeTool(fc.name ?? "", args);
+                toolCalls.push({ tool: fc.name ?? "", args, result: result.slice(0, 500) });
                 log(partyCode, promptId, "gemini", `tool:${fc.name}(${JSON.stringify(args)})`);
                 return {
                     functionResponse: {
-                        name: fc.name,
+                        name: fc.name ?? "",
                         response: { result },
                     },
                 };
             });
 
             response = await withTimeout(
-                chat.sendMessage(toolResults),
+                chat.sendMessage({ message: functionResponseParts }),
                 EVAL_TIMEOUT_MS
             );
         }
 
-        const text = response.response.text();
+        const text = response.text ?? "";
         return parseGeminiResponse(text, toolCalls, partyCode, promptId, log);
     } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);

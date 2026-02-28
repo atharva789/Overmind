@@ -12,6 +12,10 @@ export interface FileChange {
     linesRemoved: number;
 }
 
+/**
+ * Split content into lines without stripping empty tail lines.
+ * Does not normalize line endings.
+ */
 function splitLines(content: string): string[] {
     if (content === "") return [];
     return content.split("\n");

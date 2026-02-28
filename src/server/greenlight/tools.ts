@@ -169,8 +169,8 @@ function searchFile(filePath: string, query: string, results: string[]): void {
 
 // ─── Gemini Tool Declarations ───
 
-import { SchemaType } from "@google/generative-ai";
-import type { FunctionDeclaration } from "@google/generative-ai";
+import { Type } from "@google/genai";
+import type { FunctionDeclaration } from "@google/genai";
 
 export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
     {
@@ -180,10 +180,10 @@ export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
             "Use this to understand the project layout and inspect specific files. " +
             "Skips node_modules, dist, and .git directories.",
         parameters: {
-            type: SchemaType.OBJECT,
+            type: Type.OBJECT,
             properties: {
                 path: {
-                    type: SchemaType.STRING,
+                    type: Type.STRING,
                     description: "File or directory path to read, relative to project root.",
                 },
             },
@@ -197,14 +197,14 @@ export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
             "Returns matching lines with file paths and line numbers. " +
             "Skips node_modules, dist, and .git directories. Capped at 50 results.",
         parameters: {
-            type: SchemaType.OBJECT,
+            type: Type.OBJECT,
             properties: {
                 query: {
-                    type: SchemaType.STRING,
+                    type: Type.STRING,
                     description: "Text pattern to search for.",
                 },
                 path: {
-                    type: SchemaType.STRING,
+                    type: Type.STRING,
                     description: "Optional subdirectory to search within.",
                 },
             },

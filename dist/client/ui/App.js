@@ -210,7 +210,7 @@ function reducer(state, action) {
             return state;
     }
 }
-export default function App({ connection, session }) {
+export default function App({ connection, session, inviteCode }) {
     const [state, dispatch] = useReducer(reducer, initialState);
     const { stdout } = useStdout();
     const height = stdout?.rows ?? 30;
@@ -427,6 +427,6 @@ export default function App({ connection, session }) {
         // Default: OutputView
         return (_jsx(OutputView, { outputs: state.outputs, currentPromptId: state.currentPromptId }));
     };
-    return (_jsxs(Box, { flexDirection: "column", height: height, children: [_jsx(StatusBar, { partyCode: state.partyCode, memberCount: state.members.length, connectionStatus: state.connectionStatus, greenlightAvailable: state.greenlightAvailable, executionBackendAvailable: state.executionBackendAvailable }), _jsxs(Box, { flexDirection: "row", flexGrow: 1, children: [_jsx(PartyPanel, { members: state.members }), renderMainContent()] }), currentReview && state.isHost && !state.viewingMember && (_jsx(ReviewPanel, { request: currentReview, onApprove: handleApprove, onDeny: handleDeny })), _jsx(ActivityFeed, { events: state.events }), _jsx(PromptInput, { disabled: inputDisabled, onSubmit: handlePromptSubmit, onTyping: handleTyping, onIdle: handleIdle })] }));
+    return (_jsxs(Box, { flexDirection: "column", height: height, children: [_jsx(StatusBar, { partyCode: state.partyCode, memberCount: state.members.length, connectionStatus: state.connectionStatus, greenlightAvailable: state.greenlightAvailable, executionBackendAvailable: state.executionBackendAvailable, inviteCode: state.isHost ? inviteCode : undefined }), _jsxs(Box, { flexDirection: "row", flexGrow: 1, children: [_jsx(PartyPanel, { members: state.members }), renderMainContent()] }), currentReview && state.isHost && !state.viewingMember && (_jsx(ReviewPanel, { request: currentReview, onApprove: handleApprove, onDeny: handleDeny })), _jsx(ActivityFeed, { events: state.events }), _jsx(PromptInput, { disabled: inputDisabled, onSubmit: handlePromptSubmit, onTyping: handleTyping, onIdle: handleIdle })] }));
 }
 //# sourceMappingURL=App.js.map

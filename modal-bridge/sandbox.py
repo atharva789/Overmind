@@ -10,26 +10,33 @@ from __future__ import annotations
 import difflib
 import os
 import shlex
-from typing import Dict, Generator, Iterable
+from typing import Dict, Generator, Iterable, Tuple
 
 import modal
 
 from agent_image import get_or_build_image
 
-WORKDIR = "/workspace"
+WORKSPACE_DIR = "/workspace"
 
 
+# Build a sandbox path from a relative path. Does not validate the file.
 def _sandbox_path(rel_path: str) -> str:
-    return os.path.join(WORKDIR, rel_path)
+    return os.path.join(WORKSPACE_DIR, rel_path)
 
 
+# Create parent directories for a file path inside the sandbox.
 def _ensure_parent_dirs(sandbox: modal.Sandbox, rel_path: str) -> None:
     parent = os.path.dirname(_sandbox_path(rel_path))
     command = f"mkdir -p {shlex.quote(parent)}"
     sandbox.exec("sh", "-c", command).wait()
 
 
-def _write_file(sandbox: modal.Sandbox, rel_path: str, content: str) -> None:
+# Write a file to the sandbox using stdin to avoid shell escaping issues.
+def _write_file(
+    sandbox: modal.Sandbox,
+    rel_path: str,
+    content: str,
+) -> None:
     _ensure_parent_dirs(sandbox, rel_path)
     target = _sandbox_path(rel_path)
     command = f"cat > {shlex.quote(target)}"
@@ -37,6 +44,13 @@ def _write_file(sandbox: modal.Sandbox, rel_path: str, content: str) -> None:
     proc.stdin.write(content.encode())
     proc.stdin.close()
     proc.wait()
+
+
+# Convert stream output into clean text lines. Does not raise on decode.
+def _decode_line(line: object) -> str:
+    if isinstance(line, bytes):
+        return line.decode(errors="replace").rstrip("\n")
+    return str(line).rstrip("\n")
 
 
 def create_sandbox(
@@ -68,7 +82,7 @@ def create_sandbox(
 def exec_in_sandbox(
     sandbox: modal.Sandbox,
     command: Iterable[str],
-    workdir: str = WORKDIR,
+    workdir: str = WORKSPACE_DIR,
 ) -> Generator[dict, None, None]:
     """
     Execute a command inside the sandbox and stream output.
@@ -77,9 +91,9 @@ def exec_in_sandbox(
     proc = sandbox.exec(*command, workdir=workdir)
 
     for line in proc.stdout:
-        yield {"type": "stdout", "data": line.decode().rstrip("\n")}
+        yield {"type": "stdout", "data": _decode_line(line)}
     for line in proc.stderr:
-        yield {"type": "stderr", "data": line.decode().rstrip("\n")}
+        yield {"type": "stderr", "data": _decode_line(line)}
 
     proc.wait()
     yield {"type": "exit", "data": str(proc.returncode)}
@@ -97,14 +111,22 @@ def read_files(
     for rel_path in paths:
         target = _sandbox_path(rel_path)
         command = f"cat {shlex.quote(target)}"
-        proc = sandbox.exec("sh", "-c", command)
-        output = proc.stdout.read().decode()
-        proc.wait()
-        result[rel_path] = output
+        try:
+            proc = sandbox.exec("sh", "-c", command)
+            output = proc.stdout.read()
+            proc.wait()
+            if isinstance(output, bytes):
+                content = output.decode(errors="replace")
+            else:
+                content = str(output)
+            result[rel_path] = content
+        except Exception:
+            result[rel_path] = ""
     return result
 
 
-def _count_diff_lines(diff_text: str) -> tuple[int, int]:
+# Count added/removed diff lines. Does not parse hunks.
+def _count_diff_lines(diff_text: str) -> Tuple[int, int]:
     added = 0
     removed = 0
     for line in diff_text.splitlines():
@@ -129,7 +151,8 @@ def diff_files(
     current = read_files(sandbox, paths)
     changes: list[dict] = []
 
-    for rel_path, before in originals.items():
+    for rel_path in paths:
+        before = originals.get(rel_path, "")
         after = current.get(rel_path, "")
         if before == after:
             continue

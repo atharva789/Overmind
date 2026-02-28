@@ -309,9 +309,10 @@ function reducer(state: AppState, action: Action): AppState {
 interface AppProps {
     connection: Connection;
     session: Session;
+    inviteCode?: string;
 }
 
-export default function App({ connection, session }: AppProps): React.ReactElement {
+export default function App({ connection, session, inviteCode }: AppProps): React.ReactElement {
     const [state, dispatch] = useReducer(reducer, initialState);
     const { stdout } = useStdout();
     const height = stdout?.rows ?? 30;
@@ -589,6 +590,7 @@ export default function App({ connection, session }: AppProps): React.ReactEleme
                 connectionStatus={state.connectionStatus}
                 greenlightAvailable={state.greenlightAvailable}
                 executionBackendAvailable={state.executionBackendAvailable}
+                inviteCode={state.isHost ? inviteCode : undefined}
             />
             <Box flexDirection="row" flexGrow={1}>
                 <PartyPanel members={state.members} />

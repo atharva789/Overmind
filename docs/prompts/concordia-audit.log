@@ -1,0 +1,25 @@
+{"ts": 1772259156.325692, "event": "client_join", "user": "thorbthorb", "compliance_mode": "strict"}
+{"ts": 1772259158.298663, "user": "thorbthorb", "accepted": true, "reason": "accepted", "bytes": 5, "sha256": "eb3cfaf313cf8b0746dabc479c60b899f61551ee5a90a9b36298dd2d964fdd45", "compliance_mode": "strict"}
+{"ts": 1772259158.314409, "user": "thorbthorb", "accepted": true, "reason": "accepted", "bytes": 29, "sha256": "1174d12dc78f4b7d824874de48d6e0b2d8a291329df34c6cc528d4f480f9a755", "compliance_mode": "strict"}
+{"ts": 1772259158.316554, "user": "thorbthorb", "accepted": true, "reason": "accepted", "bytes": 25, "sha256": "201f7c91eb9afd90d8726e455d63d801e1ef6a9045d5ddb93bf150cd018ea7e2", "compliance_mode": "strict"}
+{"ts": 1772259158.329119, "user": "thorbthorb", "accepted": true, "reason": "accepted", "bytes": 25, "sha256": "08efec0bb7a7de6a39a06cfbd0a4a6fb8f12b6f99235f6ae5b2e2e9847ffa595", "compliance_mode": "strict"}
+{"ts": 1772259160.907229, "user": "thorbthorb", "accepted": true, "reason": "accepted", "bytes": 3, "sha256": "5fefa79b86d09afc31f8af7423a49a77ed59b039a5614cee771f505885ea90d2", "compliance_mode": "strict"}
+{"ts": 1772259162.997587, "user": "thorbthorb", "accepted": true, "reason": "accepted", "bytes": 1, "sha256": "9d1e0e2d9459d06523ad13e28a4093c2316baafe7aec5b25f30eba2e113599c4", "compliance_mode": "strict"}
+{"ts": 1772259177.800529, "user": "thorbthorb", "accepted": true, "reason": "accepted", "bytes": 1, "sha256": "8a5edab282632443219e051e4ade2d1d5bbc671c781051bf1437897cbdfea0f1", "compliance_mode": "strict"}
+{"ts": 1772259178.215353, "user": "thorbthorb", "accepted": true, "reason": "accepted", "bytes": 1, "sha256": "3f79bb7b435b05321651daefd374cdc681dc06faa65e374e38337b88ca046dea", "compliance_mode": "strict"}
+{"ts": 1772259178.5083818, "user": "thorbthorb", "accepted": true, "reason": "accepted", "bytes": 1, "sha256": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881", "compliance_mode": "strict"}
+{"ts": 1772259179.0366468, "user": "thorbthorb", "accepted": true, "reason": "accepted", "bytes": 1, "sha256": "de7d1b721a1e0632b7cf04edf5032c8ecffa9f9a08492152b926f1a5a7e765d7", "compliance_mode": "strict"}
+{"ts": 1772259179.0943072, "user": "thorbthorb", "accepted": true, "reason": "accepted", "bytes": 1, "sha256": "e3b98a4da31a127d4bde6e43033f66ba274cab0eb7eb1c70ec41402bf6273dd8", "compliance_mode": "strict"}
+{"ts": 1772259179.351893, "user": "thorbthorb", "accepted": true, "reason": "accepted", "bytes": 1, "sha256": "9d1e0e2d9459d06523ad13e28a4093c2316baafe7aec5b25f30eba2e113599c4", "compliance_mode": "strict"}
+{"ts": 1772259684.9211452, "event": "client_join", "user": "thorbthorb", "compliance_mode": "strict"}
+{"ts": 1772259686.924402, "user": "thorbthorb", "accepted": true, "reason": "accepted", "bytes": 5, "sha256": "eb3cfaf313cf8b0746dabc479c60b899f61551ee5a90a9b36298dd2d964fdd45", "compliance_mode": "strict"}
+{"ts": 1772259686.937715, "user": "thorbthorb", "accepted": true, "reason": "accepted", "bytes": 29, "sha256": "1174d12dc78f4b7d824874de48d6e0b2d8a291329df34c6cc528d4f480f9a755", "compliance_mode": "strict"}
+{"ts": 1772259686.9406788, "user": "thorbthorb", "accepted": true, "reason": "accepted", "bytes": 25, "sha256": "201f7c91eb9afd90d8726e455d63d801e1ef6a9045d5ddb93bf150cd018ea7e2", "compliance_mode": "strict"}
+{"ts": 1772259686.9560478, "user": "thorbthorb", "accepted": true, "reason": "accepted", "bytes": 25, "sha256": "08efec0bb7a7de6a39a06cfbd0a4a6fb8f12b6f99235f6ae5b2e2e9847ffa595", "compliance_mode": "strict"}
+{"ts": 1772259688.50058, "user": "thorbthorb", "accepted": true, "reason": "accepted", "bytes": 1, "sha256": "8a5edab282632443219e051e4ade2d1d5bbc671c781051bf1437897cbdfea0f1", "compliance_mode": "strict"}
+{"ts": 1772259690.1678798, "user": "thorbthorb", "accepted": true, "reason": "accepted", "bytes": 1, "sha256": "454349e422f05297191ead13e21d3db520e5abef52055e4964b82fb213f593a1", "compliance_mode": "strict"}
+{"ts": 1772259690.32941, "user": "thorbthorb", "accepted": true, "reason": "accepted", "bytes": 1, "sha256": "3f79bb7b435b05321651daefd374cdc681dc06faa65e374e38337b88ca046dea", "compliance_mode": "strict"}
+{"ts": 1772259690.800887, "user": "thorbthorb", "accepted": true, "reason": "accepted", "bytes": 1, "sha256": "043a718774c572bd8a25adbeb1bfcd5c0256ae11cecf9f9c3f925d0e52beaf89", "compliance_mode": "strict"}
+{"ts": 1772259691.386678, "user": "thorbthorb", "accepted": true, "reason": "accepted", "bytes": 1, "sha256": "9d1e0e2d9459d06523ad13e28a4093c2316baafe7aec5b25f30eba2e113599c4", "compliance_mode": "strict"}
+{"ts": 1772259692.416524, "user": "thorbthorb", "accepted": true, "reason": "accepted", "bytes": 1, "sha256": "9d1e0e2d9459d06523ad13e28a4093c2316baafe7aec5b25f30eba2e113599c4", "compliance_mode": "strict"}
+{"ts": 1772260008.987312, "user": "thorbthorb", "accepted": true, "reason": "accepted", "bytes": 1, "sha256": "084fed08b978af4d7d196a7446a86b58009e636b611db16211b65a9aadff29c5", "compliance_mode": "strict"}

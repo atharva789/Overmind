@@ -13,11 +13,10 @@ import uuid
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional
 
+import modal
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-
-import modal
 
 from sandbox import (
     create_sandbox,
@@ -57,6 +56,10 @@ SANDBOXES: Dict[str, SandboxRecord] = {}
 
 
 def _get_record(sandbox_id: str) -> SandboxRecord:
+    """
+    Look up a sandbox record.
+    Raises HTTPException if the sandbox is missing.
+    """
     record = SANDBOXES.get(sandbox_id)
     if not record:
         raise HTTPException(status_code=404, detail="Sandbox not found")
@@ -64,6 +67,10 @@ def _get_record(sandbox_id: str) -> SandboxRecord:
 
 
 def _sse_stream(events: Iterable[dict]) -> Iterable[str]:
+    """
+    Convert event dicts into SSE payload strings.
+    Does not validate event shapes.
+    """
     for event in events:
         payload = json.dumps(event)
         yield f"data: {payload}\n\n"
@@ -90,7 +97,16 @@ def sandbox_create(req: SandboxCreateRequest) -> Dict[str, str]:
     Create a sandbox and upload project files.
     Returns the generated sandbox_id.
     """
-    sandbox = create_sandbox(req.image, req.files, req.env, req.timeout_s)
+    try:
+        sandbox = create_sandbox(
+            req.image,
+            req.files,
+            req.env,
+            req.timeout_s,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
     sandbox_id = str(uuid.uuid4())
     SANDBOXES[sandbox_id] = SandboxRecord(
         sandbox=sandbox,
@@ -109,7 +125,11 @@ def sandbox_exec(
     Always returns an SSE stream.
     """
     record = _get_record(sandbox_id)
-    events = exec_in_sandbox(record.sandbox, req.command, req.workdir)
+    events = exec_in_sandbox(
+        record.sandbox,
+        req.command,
+        req.workdir,
+    )
     return StreamingResponse(
         _sse_stream(events),
         media_type="text/event-stream",

@@ -121,11 +121,14 @@ export class ModalClient {
      */
     async createSandbox(config: SandboxConfig): Promise<string> {
         const url = `${this.baseUrl}/sandbox/create`;
-        const response = await requestJson<{ sandbox_id: string }>(url, {
-            method: "POST",
-            headers: buildJsonHeaders(),
-            body: JSON.stringify(config),
-        });
+        const response = await requestJson<{ sandbox_id: string }>(
+            url,
+            {
+                method: "POST",
+                headers: buildJsonHeaders(),
+                body: JSON.stringify(config),
+            }
+        );
         return response.sandbox_id;
     }
 
@@ -181,11 +184,14 @@ export class ModalClient {
         paths: string[]
     ): Promise<FileChange[]> {
         const url = `${this.baseUrl}/sandbox/${sandboxId}/diff`;
-        const response = await requestJson<{ changes: FileChange[] }>(url, {
-            method: "POST",
-            headers: buildJsonHeaders(),
-            body: JSON.stringify({ originals, paths }),
-        });
+        const response = await requestJson<{ changes: FileChange[] }>(
+            url,
+            {
+                method: "POST",
+                headers: buildJsonHeaders(),
+                body: JSON.stringify({ originals, paths }),
+            }
+        );
         return response.changes;
     }
 
