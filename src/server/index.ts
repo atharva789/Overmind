@@ -1,4 +1,5 @@
 import { WebSocketServer, WebSocket } from "ws";
+import { basename } from "path";
 import { customAlphabet } from "nanoid";
 import { Party } from "./party.js";
 import type { PromptEntry } from "./party.js";
@@ -395,22 +396,30 @@ export function startServer(): WebSocketServer {
             if (!parties.has(partyCode)) return;
 
             try {
-                // Insert into DB
-                await pool.query(
-                    "INSERT INTO queries (content, username) VALUES ($1, $2)",
-                    [entry.content, entry.username]
-                );
-
                 const projectRoot = process.env["OVERMIND_PROJECT_ROOT"] ?? process.cwd();
-                checkAndRunStoryAgent(projectRoot).catch(console.error);
+                const projectId = basename(projectRoot);
 
-                // 2-second UI delay to let the user see their prompt
-                await sleep(2000);
+                // Insert into DB
+                const insertRes = await pool.query(
+                    "INSERT INTO queries (project_id, content, username) VALUES ($1, $2, $3) RETURNING id",
+                    [projectId, entry.content, entry.username]
+                );
+                const queryId = insertRes.rows[0].id;
 
-                party.sendTo(connectionId, {
-                    type: "prompt-greenlit",
-                    payload: { promptId: entry.promptId, reasoning: "Prompt securely recorded in project memory." },
-                });
+                const results = await checkAndRunStoryAgent(projectRoot) || [];
+                const featureResult = results.find(r => r.queryId === queryId);
+
+                if (featureResult?.type === "new_feature") {
+                    party.sendTo(connectionId, {
+                        type: "feature-created",
+                        payload: { promptId: entry.promptId, title: featureResult.title! },
+                    });
+                } else {
+                    party.sendTo(connectionId, {
+                        type: "prompt-greenlit",
+                        payload: { promptId: entry.promptId, reasoning: "Prompt securely recorded in project memory." },
+                    });
+                }
                 party.broadcast({
                     type: "activity",
                     payload: {

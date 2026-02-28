@@ -96,6 +96,11 @@ function reducer(state, action) {
                 ...state,
                 outputs: addOutput(state.outputs, action.promptId, "greenlit", action.reasoning, state.promptContents[action.promptId]),
             };
+        case "FEATURE_CREATED":
+            return {
+                ...state,
+                outputs: addOutput(state.outputs, action.promptId, "feature-created", `Assigned to New Core Feature: ${action.title}`, state.promptContents[action.promptId]),
+            };
         case "PROMPT_REDLIT":
             return {
                 ...state,
@@ -306,6 +311,13 @@ export default function App({ connection, session, inviteCode }) {
                     break;
                 case "prompt-approved":
                     dispatch({ type: "PROMPT_APPROVED", promptId: msg.payload.promptId });
+                    break;
+                case "feature-created":
+                    dispatch({
+                        type: "FEATURE_CREATED",
+                        promptId: msg.payload.promptId,
+                        title: msg.payload.title,
+                    });
                     break;
                 case "prompt-denied":
                     dispatch({

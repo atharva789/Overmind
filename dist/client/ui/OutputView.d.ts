@@ -1,5 +1,5 @@
 import React from "react";
-export type OutputStatus = "queued" | "greenlit" | "redlit" | "approved" | "denied" | "diff" | "complete" | "error";
+export type OutputStatus = "queued" | "greenlit" | "feature-created" | "redlit" | "approved" | "denied" | "diff" | "complete" | "error";
 export interface OutputEntry {
     id: string;
     promptId: string;

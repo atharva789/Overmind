@@ -10,6 +10,12 @@ import { DEFAULT_PORT, MAX_MEMBERS_DEFAULT } from "./shared/constants.js";
 import { decodeInviteCode, encodeInviteCode, isInviteCode } from "./shared/invite.js";
 import App from "./client/ui/App.js";
 import clipboardy from "clipboardy";
+import { basename } from "path";
+import { pool } from "./server/db.js";
+import { generateInitialStory } from "./server/story/agent.js";
+import { GoogleGenAI } from "@google/genai";
+import * as p from "@clack/prompts";
+import { GEMINI_MODEL_DEFAULT } from "./shared/constants.js";
 const program = new Command();
 program
     .name("overmind")
@@ -28,6 +34,33 @@ program
     const isTTY = !!process.stdout.isTTY;
     setMaxMembers(maxMem);
     process.env["OVERMIND_PORT"] = String(port);
+    const projectRoot = process.env["OVERMIND_PROJECT_ROOT"] ?? process.cwd();
+    const projectId = basename(projectRoot);
+    // --- Core Features Setup Wizard ---
+    try {
+        const { rows } = await pool.query("SELECT COUNT(*) as count FROM features WHERE project_id = $1", [projectId]);
+        if (rows[0].count === "0" && isTTY) {
+            const apiKey = process.env["GEMINI_API_KEY"];
+            if (apiKey) {
+                p.intro(`Welcome to Overmind! Looking at new project: ${projectId}`);
+                const desc = await p.text({
+                    message: "What kind of project is this? (e.g. A task manager in React, A python API)",
+                    placeholder: "A multiplayer terminal in Typescript",
+                });
+                let initialContext = "";
+                if (!p.isCancel(desc) && desc) {
+                    initialContext = `Project Description from Host: ${desc}\n\n`;
+                }
+                p.outro("Great! Setting up Core Features...");
+                const ai = new GoogleGenAI({ apiKey });
+                const model = process.env["OVERMIND_MODEL"] ?? GEMINI_MODEL_DEFAULT;
+                await generateInitialStory(ai, model, projectRoot, projectId, initialContext);
+            }
+        }
+    }
+    catch (e) {
+        console.error("[cli] Could not run setup wizard:", e);
+    }
     const wss = startServer();
     wss.on("listening", async () => {
         const code = reserveParty(username);

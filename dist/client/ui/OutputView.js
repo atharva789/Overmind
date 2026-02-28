@@ -5,6 +5,7 @@ import Badge from "./components/Badge.js";
 const STATUS_CONFIG = {
     queued: { color: "blue", label: "QUEUED", dot: "○" },
     greenlit: { color: "green", label: "GREENLIT", dot: "●" },
+    "feature-created": { color: "yellow", label: "NEW FEATURE", dot: "●" },
     redlit: { color: "red", label: "REDLIT", dot: "●" },
     approved: { color: "green", label: "APPROVED", dot: "●" },
     denied: { color: "red", label: "DENIED", dot: "●" },
@@ -29,7 +30,7 @@ export default function OutputView({ outputs, currentPromptId, }) {
     return (_jsx(Box, { flexDirection: "column", flexGrow: 1, paddingX: 1, children: visible.map((entry) => {
             const config = STATUS_CONFIG[entry.status];
             const isActive = entry.status === "queued";
-            const isVerdict = entry.status === "greenlit" || entry.status === "redlit";
+            const isVerdict = entry.status === "greenlit" || entry.status === "redlit" || entry.status === "feature-created";
             if (isVerdict && entry.promptContent) {
                 // Show prompt text with colored dot for verdicts
                 return (_jsxs(Box, { flexDirection: "column", marginBottom: 0, children: [_jsxs(Box, { children: [_jsxs(Text, { color: config.color, bold: true, children: [config.dot, " "] }), _jsx(Text, { wrap: "truncate", children: entry.promptContent })] }), _jsxs(Text, { color: "gray", wrap: "truncate", children: ["  ", entry.message] })] }, entry.id));

@@ -1,7 +1,7 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { pool } from "../db.js";
 import { writeFile, readFile, readdir } from "fs/promises";
-import { join } from "path";
+import { join, basename } from "path";
 import { GEMINI_MODEL_DEFAULT } from "../../shared/constants.js";
 
 const ACTIVE_FEATURES_LIMIT = 15;
@@ -41,35 +41,33 @@ export async function checkAndRunStoryAgent(projectRoot: string) {
 
     const ai = new GoogleGenAI({ apiKey });
     const model = process.env["OVERMIND_MODEL"] ?? GEMINI_MODEL_DEFAULT;
+    const projectId = basename(projectRoot);
 
     try {
-        const { rows: totalFeatures } = await pool.query("SELECT COUNT(*) as count FROM features");
+        const results: { queryId: string; type: "new_feature" | "existing"; title?: string }[] = [];
 
-        // 1. Empty State: Summarize codebase into Core Features
-        // We only do this if there are NO features yet. We don't return early so that
-        // the query that triggered this (if any) still gets clustered below.
-        if (totalFeatures[0].count === "0") {
-            await generateInitialStory(ai, model, projectRoot);
-        }
-
-        // 2. Continuous State: Semantically cluster each unclustered query
+        // Continuous State: Semantically cluster each unclustered query
         const { rows: unclustered } = await pool.query(
-            "SELECT id, content, username, created_at FROM queries WHERE feature_id IS NULL ORDER BY created_at ASC"
+            "SELECT id, content, username, created_at FROM queries WHERE feature_id IS NULL AND project_id = $1 ORDER BY created_at ASC",
+            [projectId]
         );
 
         if (unclustered.length > 0) {
             console.log(`[story-agent] Processing ${unclustered.length} unclustered queries...`);
             for (const query of unclustered) {
-                await evaluateAndClusterQuery(ai, model, projectRoot, query);
+                const res = await evaluateAndClusterQuery(ai, model, projectRoot, projectId, query);
+                if (res) results.push({ queryId: query.id, ...res });
             }
         }
+
+        return results;
     } catch (err) {
         console.error("[story-agent] Error running story agent:", err);
     }
 }
 
-async function generateInitialStory(ai: GoogleGenAI, model: string, projectRoot: string) {
-    console.log("[story-agent] DB is empty. Generating initial story.md from codebase...");
+export async function generateInitialStory(ai: GoogleGenAI, model: string, projectRoot: string, projectId: string, initialContext: string = "") {
+    console.log(`[story-agent] DB is empty for project '${projectId}'. Generating initial story.md from codebase...`);
 
     // Naively gather high-level project files (package.json, README)
     let contextStr = "Directory listing:\\n";
@@ -92,6 +90,8 @@ async function generateInitialStory(ai: GoogleGenAI, model: string, projectRoot:
 
     const prompt = `You are a Story Agent for a software project. The database of user prompts is currently empty.
 Read the following high-level context about the codebase and write a markdown document summarizing the "Core features" of this application.
+
+${initialContext}
 
 Context:
 ${contextStr}
@@ -118,11 +118,11 @@ Output ONLY a valid markdown document with a H1 title, a short intro, and a sect
     }
 }
 
-async function evaluateAndClusterQuery(ai: GoogleGenAI, model: string, projectRoot: string, query: { id: string, username: string, content: string }) {
-    // Fetch the most recent active features to provide as context
+async function evaluateAndClusterQuery(ai: GoogleGenAI, model: string, projectRoot: string, projectId: string, query: { id: string, username: string, content: string }) {
+    // Fetch the most recent active features for this project to provide as context
     const { rows: features } = await pool.query(
-        "SELECT id, title, description FROM features ORDER BY created_at DESC LIMIT $1",
-        [ACTIVE_FEATURES_LIMIT]
+        "SELECT id, title, description FROM features WHERE project_id = $1 ORDER BY created_at DESC LIMIT $2",
+        [projectId, ACTIVE_FEATURES_LIMIT]
     );
 
     const featuresList = features.map(f => `Feature ID: ${f.id} | Title: ${f.title}\nDescription: ${f.description}`).join("\n\n");
@@ -174,6 +174,8 @@ Prompt: ${query.content}
         return;
     }
 
+    let result: { type: "new_feature" | "existing"; title?: string } | undefined;
+
     const client = await pool.connect();
     try {
         await client.query("BEGIN");
@@ -184,18 +186,20 @@ Prompt: ${query.content}
             if (check.rows.length > 0) {
                 await client.query("UPDATE queries SET feature_id = $1 WHERE id = $2", [decision.feature_id, query.id]);
                 console.log(`[story-agent] Assigned query to existing Feature: ${decision.feature_id}`);
+                result = { type: "existing" };
             } else {
                 console.log(`[story-agent] Gemini hallucinated a non-existent feature ID: ${decision.feature_id}. Leaving unclustered.`);
             }
         }
         else if (decision.action === "create_new" && decision.title && decision.description) {
             const insertRes = await client.query(
-                "INSERT INTO features (title, description) VALUES ($1, $2) RETURNING id",
-                [decision.title, decision.description]
+                "INSERT INTO features (project_id, title, description) VALUES ($1, $2, $3) RETURNING id",
+                [projectId, decision.title, decision.description]
             );
             const newFeatureId = insertRes.rows[0].id;
             await client.query("UPDATE queries SET feature_id = $1 WHERE id = $2", [newFeatureId, query.id]);
-            console.log(`[story-agent] Created new Feature: ${decision.title} (${newFeatureId})`);
+            console.log(`[story-agent] Created new Feature for '${projectId}': ${decision.title} (${newFeatureId})`);
+            result = { type: "new_feature", title: decision.title };
         } else {
             console.log(`[story-agent] Invalid decision format from Gemini:`, decision);
         }
@@ -210,15 +214,18 @@ Prompt: ${query.content}
     }
 
     // Now regenerate story.md
-    await regenerateStoryMarkdown(projectRoot);
+    await regenerateStoryMarkdown(projectRoot, projectId);
+
+    return result;
 }
 
-export async function regenerateStoryMarkdown(projectRoot: string) {
-    console.log("[story-agent] Regenerating story.md...");
+export async function regenerateStoryMarkdown(projectRoot: string, projectId: string) {
+    console.log(`[story-agent] Regenerating story.md for '${projectId}'...`);
 
     // Fetch all features, oldest first
     const { rows: features } = await pool.query(
-        "SELECT id, title, description, created_at FROM features ORDER BY created_at ASC"
+        "SELECT id, title, description, created_at FROM features WHERE project_id = $1 ORDER BY created_at ASC",
+        [projectId]
     );
 
     if (features.length === 0) return;

@@ -6,6 +6,7 @@ import Badge from "./components/Badge.js";
 export type OutputStatus =
     | "queued"
     | "greenlit"
+    | "feature-created"
     | "redlit"
     | "approved"
     | "denied"
@@ -30,6 +31,7 @@ interface OutputViewProps {
 const STATUS_CONFIG: Record<OutputStatus, { color: string; label: string; dot: string }> = {
     queued: { color: "blue", label: "QUEUED", dot: "○" },
     greenlit: { color: "green", label: "GREENLIT", dot: "●" },
+    "feature-created": { color: "yellow", label: "NEW FEATURE", dot: "●" },
     redlit: { color: "red", label: "REDLIT", dot: "●" },
     approved: { color: "green", label: "APPROVED", dot: "●" },
     denied: { color: "red", label: "DENIED", dot: "●" },
@@ -69,7 +71,7 @@ export default function OutputView({
             {visible.map((entry) => {
                 const config = STATUS_CONFIG[entry.status];
                 const isActive = entry.status === "queued";
-                const isVerdict = entry.status === "greenlit" || entry.status === "redlit";
+                const isVerdict = entry.status === "greenlit" || entry.status === "redlit" || entry.status === "feature-created";
 
                 if (isVerdict && entry.promptContent) {
                     // Show prompt text with colored dot for verdicts

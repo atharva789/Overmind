@@ -78,6 +78,7 @@ type Action =
     | { type: "ERROR"; message: string; code: string }
     | { type: "LOCAL_PROMPT_SUBMITTED"; promptId: string; content: string }
     | { type: "REVIEW_SHIFT" }
+    | { type: "FEATURE_CREATED"; promptId: string; title: string }
     | { type: "EXECUTION_QUEUED"; promptId: string }
     | { type: "EXECUTION_UPDATE"; promptId: string; stage: string }
     | { type: "EXECUTION_COMPLETE"; promptId: string; files: FileChange[]; summary: string }
@@ -173,6 +174,15 @@ function reducer(state: AppState, action: Action): AppState {
                 ...state,
                 outputs: addOutput(
                     state.outputs, action.promptId, "greenlit", action.reasoning,
+                    state.promptContents[action.promptId]
+                ),
+            };
+
+        case "FEATURE_CREATED":
+            return {
+                ...state,
+                outputs: addOutput(
+                    state.outputs, action.promptId, "feature-created", `Assigned to New Core Feature: ${action.title}`,
                     state.promptContents[action.promptId]
                 ),
             };
@@ -418,6 +428,13 @@ export default function App({ connection, session, inviteCode }: AppProps): Reac
                     break;
                 case "prompt-approved":
                     dispatch({ type: "PROMPT_APPROVED", promptId: msg.payload.promptId });
+                    break;
+                case "feature-created":
+                    dispatch({
+                        type: "FEATURE_CREATED",
+                        promptId: msg.payload.promptId,
+                        title: msg.payload.title,
+                    });
                     break;
                 case "prompt-denied":
                     dispatch({
