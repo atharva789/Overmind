@@ -23,9 +23,10 @@ import {
     MODAL_BRIDGE_URL,
     MODAL_BRIDGE_PORT,
     BRIDGE_HEALTH_INTERVAL_MS,
+    OVERMIND_ORCHESTRATOR_URL,
     ErrorCode,
 } from "../shared/constants.js";
-import type { EvaluationResult } from "./greenlight/evaluate.js";
+import type { EvaluationResult } from "../shared/protocol.js";
 import { Orchestrator, type ExecutionEvent } from "./orchestrator/index.js";
 import { initDb, pool } from "./db.js";
 import { checkAndRunStoryAgent } from "./story/agent.js";
@@ -52,7 +53,6 @@ const pendingExecutions: Map<string, PendingExecution[]> = new Map();
 
 let maxMembers = MAX_MEMBERS_DEFAULT;
 let executionBackendAvailable = false;
-let greenlightAvailable = computeGreenlightAvailable();
 let bridgeProcess: ChildProcess | null = null;
 let bridgeHealthTimer: NodeJS.Timeout | null = null;
 
@@ -82,22 +82,36 @@ function log(msg: string, partyCode?: string): void {
 }
 
 /**
- * Determine whether the greenlight backend is configured.
- * Does not validate credentials; only checks env presence.
- * Edge case: Both backends missing returns false.
- */
-function computeGreenlightAvailable(): boolean {
-    const hasGemini = Boolean(process.env["GEMINI_API_KEY"]);
-    const hasGlm = Boolean(process.env["MODAL_GREENLIGHT_URL"]);
-    return hasGemini || hasGlm;
-}
-
-/**
  * Decide whether execution should run locally or via Modal.
  * Does not verify that the local agent command exists.
  */
 function isLocalMode(): boolean {
     return process.env["OVERMIND_LOCAL"] === "1";
+}
+
+/**
+ * Decide whether remote orchestrator mode is enabled.
+ * Does not validate the URL.
+ */
+function isRemoteOrchestratorEnabled(): boolean {
+    return OVERMIND_ORCHESTRATOR_URL.trim().length > 0;
+}
+
+/**
+ * Build the /health endpoint for the remote orchestrator.
+ * Does not perform network calls.
+ */
+function buildRemoteOrchestratorHealthUrl(): string {
+    const trimmed = OVERMIND_ORCHESTRATOR_URL.replace(/\/+$/u, "");
+    const runSuffix = "/runs";
+    const executeSuffix = "/execute";
+    if (trimmed.endsWith(runSuffix)) {
+        return `${trimmed.slice(0, -runSuffix.length)}/health`;
+    }
+    if (trimmed.endsWith(executeSuffix)) {
+        return `${trimmed.slice(0, -executeSuffix.length)}/health`;
+    }
+    return `${trimmed}/health`;
 }
 
 /**
@@ -122,7 +136,6 @@ function sendSystemStatus(party: Party, connectionId: string): void {
     party.sendTo(connectionId, {
         type: "system-status",
         payload: {
-            greenlightAvailable,
             executionBackendAvailable:
                 executionBackendAvailable || isLocalMode(),
         },
@@ -138,7 +151,6 @@ function broadcastSystemStatus(): void {
         party.broadcast({
             type: "system-status",
             payload: {
-                greenlightAvailable,
                 executionBackendAvailable:
                     executionBackendAvailable || isLocalMode(),
             },
@@ -147,12 +159,25 @@ function broadcastSystemStatus(): void {
 }
 
 /**
- * Start the Modal bridge process and health checks if needed.
+ * Start execution health checks for the active backend.
  * Does not throw; failures mark execution backend unavailable.
  */
 async function initBridge(): Promise<void> {
     if (isLocalMode()) {
         setExecutionBackendAvailable(true);
+        return;
+    }
+
+    if (isRemoteOrchestratorEnabled()) {
+        await checkRemoteOrchestratorHealth();
+
+        if (bridgeHealthTimer) {
+            clearInterval(bridgeHealthTimer);
+        }
+
+        bridgeHealthTimer = setInterval(() => {
+            void checkRemoteOrchestratorHealth();
+        }, BRIDGE_HEALTH_INTERVAL_MS);
         return;
     }
 
@@ -213,6 +238,27 @@ async function checkBridgeHealth(): Promise<void> {
     }
 }
 
+/**
+ * Check remote orchestrator health and update availability.
+ * Does not throw; failures mark execution unavailable.
+ */
+async function checkRemoteOrchestratorHealth(): Promise<void> {
+    const url = buildRemoteOrchestratorHealthUrl();
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 5000);
+    try {
+        const res = await fetch(url, { signal: controller.signal });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = (await res.json()) as { llm_connected?: boolean };
+        setExecutionBackendAvailable(Boolean(data.llm_connected));
+    } catch (err) {
+        log(`Remote orchestrator health check failed: ${String(err)}`);
+        setExecutionBackendAvailable(false);
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
 // ─── Public API ───
 
 export function reserveParty(hostUsername: string): string {
@@ -230,7 +276,6 @@ export function reserveParty(hostUsername: string): string {
  */
 export function startServer(): WebSocketServer {
     const port = Number(process.env["OVERMIND_PORT"]) || DEFAULT_PORT;
-    greenlightAvailable = computeGreenlightAvailable();
     void initBridge();
 
     initDb()
@@ -339,7 +384,7 @@ export function startServer(): WebSocketServer {
             parties.set(partyCode, party);
             orchestrators.set(
                 partyCode,
-                new Orchestrator(PROJECT_ROOT, MODAL_BRIDGE_URL)
+                new Orchestrator(PROJECT_ROOT)
             );
             log(`${username} created and joined as host`, partyCode);
 
@@ -666,7 +711,7 @@ export function startServer(): WebSocketServer {
                 const projectId = basename(projectRoot);
 
                 // Insert into DB
-                const insertRes = await pool.query(
+                const insertRes: any = await pool.query(
                     "INSERT INTO queries (project_id, content, username) VALUES ($1, $2, $3) RETURNING id",
                     [projectId, entry.content, entry.username]
                 );
@@ -720,7 +765,10 @@ export function startServer(): WebSocketServer {
                 };
                 enqueueExecution(party, entry, fakeResult);
             } catch (err) {
-                log(`Database insert/evaluation error: ${err instanceof Error ? err.message : String(err)}`, partyCode);
+                const errorMessage = err instanceof Error
+                    ? err.message
+                    : String(err);
+                log(`Database insert/evaluation error: ${errorMessage}`, partyCode);
             }
         });
 
@@ -826,7 +874,7 @@ async function runExecutionFlow(
     let orchestrator = orchestrators.get(party.code);
     if (!orchestrator) {
         const projectRoot = process.env["OVERMIND_PROJECT_ROOT"] ?? process.cwd();
-        orchestrator = new Orchestrator(projectRoot, MODAL_BRIDGE_URL);
+        orchestrator = new Orchestrator(projectRoot);
         orchestrators.set(party.code, orchestrator);
     }
 

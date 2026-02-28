@@ -148,8 +148,8 @@ export class Session {
                 break;
 
             case "system-status":
-                if (!msg.payload.greenlightAvailable) {
-                    console.log(`[system] ⚠ Greenlight agent unavailable`);
+                if (!msg.payload.executionBackendAvailable) {
+                    console.log(`[system] ⚠ Execution backend unavailable`);
                 }
                 break;
         }

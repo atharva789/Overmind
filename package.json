@@ -3,16 +3,18 @@
   "version": "0.1.0",
   "type": "module",
   "bin": {
-    "overmind": "dist/cli.js"
+    "overmind": "dist/boot.js",
+    "overmind-deploy": "tools/modal-deploy.sh"
   },
   "scripts": {
     "build": "tsc",
     "dev": "tsx --watch src/cli.ts",
-    "start": "node dist/cli.js"
+    "start": "node dist/boot.js"
   },
   "dependencies": {
     "@clack/prompts": "^1.0.1",
     "@google/genai": "^1.0.0",
+    "better-sqlite3": "^12.6.2",
     "chalk": "^5.6.2",
     "cli-highlight": "^2.1.11",
     "clipboardy": "^5.3.1",
@@ -29,6 +31,7 @@
     "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.5.0",
     "@types/pg": "^8.18.0",
     "@types/react": "^19.2.14",

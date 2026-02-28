@@ -22,6 +22,51 @@ export declare const FileChangeSchema: z.ZodObject<{
     linesRemoved: number;
 }>;
 export type FileChange = z.infer<typeof FileChangeSchema>;
+export declare const EvaluationResultSchema: z.ZodObject<{
+    verdict: z.ZodEnum<["greenlit", "redlit"]>;
+    reasoning: z.ZodString;
+    conflicts: z.ZodArray<z.ZodString, "many">;
+    affectedFiles: z.ZodArray<z.ZodString, "many">;
+    executionHints: z.ZodObject<{
+        estimatedComplexity: z.ZodEnum<["simple", "moderate", "complex"]>;
+        requiresBuild: z.ZodBoolean;
+        requiresTests: z.ZodBoolean;
+        relatedContextFiles: z.ZodArray<z.ZodString, "many">;
+    }, "strip", z.ZodTypeAny, {
+        estimatedComplexity: "simple" | "moderate" | "complex";
+        requiresBuild: boolean;
+        requiresTests: boolean;
+        relatedContextFiles: string[];
+    }, {
+        estimatedComplexity: "simple" | "moderate" | "complex";
+        requiresBuild: boolean;
+        requiresTests: boolean;
+        relatedContextFiles: string[];
+    }>;
+}, "strip", z.ZodTypeAny, {
+    verdict: "greenlit" | "redlit";
+    reasoning: string;
+    conflicts: string[];
+    affectedFiles: string[];
+    executionHints: {
+        estimatedComplexity: "simple" | "moderate" | "complex";
+        requiresBuild: boolean;
+        requiresTests: boolean;
+        relatedContextFiles: string[];
+    };
+}, {
+    verdict: "greenlit" | "redlit";
+    reasoning: string;
+    conflicts: string[];
+    affectedFiles: string[];
+    executionHints: {
+        estimatedComplexity: "simple" | "moderate" | "complex";
+        requiresBuild: boolean;
+        requiresTests: boolean;
+        relatedContextFiles: string[];
+    };
+}>;
+export type EvaluationResult = z.infer<typeof EvaluationResultSchema>;
 export declare const ClientMessageSchema: z.ZodDiscriminatedUnion<"type", [z.ZodObject<{
     type: z.ZodLiteral<"join">;
     payload: z.ZodObject<{
@@ -87,26 +132,26 @@ export declare const ClientMessageSchema: z.ZodDiscriminatedUnion<"type", [z.Zod
         verdict: z.ZodEnum<["approve", "deny"]>;
         reason: z.ZodOptional<z.ZodString>;
     }, "strip", z.ZodTypeAny, {
-        promptId: string;
         verdict: "approve" | "deny";
+        promptId: string;
         reason?: string | undefined;
     }, {
-        promptId: string;
         verdict: "approve" | "deny";
+        promptId: string;
         reason?: string | undefined;
     }>;
 }, "strip", z.ZodTypeAny, {
     type: "host-verdict";
     payload: {
-        promptId: string;
         verdict: "approve" | "deny";
+        promptId: string;
         reason?: string | undefined;
     };
 }, {
     type: "host-verdict";
     payload: {
-        promptId: string;
         verdict: "approve" | "deny";
+        promptId: string;
         reason?: string | undefined;
     };
 }>, z.ZodObject<{
@@ -227,23 +272,23 @@ export declare const ServerMessageSchema: z.ZodDiscriminatedUnion<"type", [z.Zod
         promptId: z.ZodString;
         reasoning: z.ZodString;
     }, "strip", z.ZodTypeAny, {
-        promptId: string;
         reasoning: string;
+        promptId: string;
     }, {
-        promptId: string;
         reasoning: string;
+        promptId: string;
     }>;
 }, "strip", z.ZodTypeAny, {
     type: "prompt-greenlit";
     payload: {
-        promptId: string;
         reasoning: string;
+        promptId: string;
     };
 }, {
     type: "prompt-greenlit";
     payload: {
-        promptId: string;
         reasoning: string;
+        promptId: string;
     };
 }>, z.ZodObject<{
     type: z.ZodLiteral<"prompt-redlit">;
@@ -252,27 +297,27 @@ export declare const ServerMessageSchema: z.ZodDiscriminatedUnion<"type", [z.Zod
         reasoning: z.ZodString;
         conflicts: z.ZodArray<z.ZodString, "many">;
     }, "strip", z.ZodTypeAny, {
-        promptId: string;
         reasoning: string;
         conflicts: string[];
+        promptId: string;
     }, {
-        promptId: string;
         reasoning: string;
         conflicts: string[];
+        promptId: string;
     }>;
 }, "strip", z.ZodTypeAny, {
     type: "prompt-redlit";
     payload: {
-        promptId: string;
         reasoning: string;
         conflicts: string[];
+        promptId: string;
     };
 }, {
     type: "prompt-redlit";
     payload: {
-        promptId: string;
         reasoning: string;
         conflicts: string[];
+        promptId: string;
     };
 }>, z.ZodObject<{
     type: z.ZodLiteral<"prompt-approved">;
@@ -326,35 +371,35 @@ export declare const ServerMessageSchema: z.ZodDiscriminatedUnion<"type", [z.Zod
         reasoning: z.ZodString;
         conflicts: z.ZodArray<z.ZodString, "many">;
     }, "strip", z.ZodTypeAny, {
+        reasoning: string;
+        conflicts: string[];
         username: string;
         promptId: string;
         content: string;
-        reasoning: string;
-        conflicts: string[];
     }, {
+        reasoning: string;
+        conflicts: string[];
         username: string;
         promptId: string;
         content: string;
-        reasoning: string;
-        conflicts: string[];
     }>;
 }, "strip", z.ZodTypeAny, {
     type: "host-review-request";
     payload: {
+        reasoning: string;
+        conflicts: string[];
         username: string;
         promptId: string;
         content: string;
-        reasoning: string;
-        conflicts: string[];
     };
 }, {
     type: "host-review-request";
     payload: {
+        reasoning: string;
+        conflicts: string[];
         username: string;
         promptId: string;
         content: string;
-        reasoning: string;
-        conflicts: string[];
     };
 }>, z.ZodObject<{
     type: z.ZodLiteral<"feature-created">;
@@ -577,25 +622,20 @@ export declare const ServerMessageSchema: z.ZodDiscriminatedUnion<"type", [z.Zod
 }>, z.ZodObject<{
     type: z.ZodLiteral<"system-status">;
     payload: z.ZodObject<{
-        greenlightAvailable: z.ZodBoolean;
         executionBackendAvailable: z.ZodBoolean;
     }, "strip", z.ZodTypeAny, {
-        greenlightAvailable: boolean;
         executionBackendAvailable: boolean;
     }, {
-        greenlightAvailable: boolean;
         executionBackendAvailable: boolean;
     }>;
 }, "strip", z.ZodTypeAny, {
     type: "system-status";
     payload: {
-        greenlightAvailable: boolean;
         executionBackendAvailable: boolean;
     };
 }, {
     type: "system-status";
     payload: {
-        greenlightAvailable: boolean;
         executionBackendAvailable: boolean;
     };
 }>, z.ZodObject<{

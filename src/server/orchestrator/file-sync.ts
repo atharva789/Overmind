@@ -8,7 +8,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { ALWAYS_SYNC_PATTERNS } from "../../shared/constants.js";
-import type { EvaluationResult } from "../greenlight/evaluate.js";
+import type { EvaluationResult } from "../../shared/protocol.js";
 
 const EXCLUDED_DIRS = new Set([
     "node_modules",

@@ -41,7 +41,7 @@ program
     await initDb();
     try {
         const { rows } = await pool.query("SELECT initialized FROM projects WHERE id = $1", [projectId]);
-        const isInitialized = rows.length > 0 && rows[0].initialized === true;
+        const isInitialized = rows.length > 0 && rows[0].initialized === 1;
         if (!isInitialized && isTTY) {
             const apiKey = process.env["GEMINI_API_KEY"];
             if (apiKey) {

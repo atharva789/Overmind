@@ -1,6 +1,6 @@
 import { jsx as _jsx, jsxs as _jsxs } from "react/jsx-runtime";
 import { Box, Text, useStdout } from "ink";
-export default function StatusBar({ partyCode, memberCount, connectionStatus, greenlightAvailable = true, executionBackendAvailable = true, inviteCode, }) {
+export default function StatusBar({ partyCode, memberCount, connectionStatus, executionBackendAvailable = true, inviteCode, }) {
     const { stdout } = useStdout();
     const width = stdout?.columns ?? 80;
     const dot = "●";
@@ -15,8 +15,6 @@ export default function StatusBar({ partyCode, memberCount, connectionStatus, gr
             ? "Reconnecting"
             : "Disconnected";
     const warnings = [];
-    if (!greenlightAvailable)
-        warnings.push("⚠ Greenlight unavailable");
     if (!executionBackendAvailable)
         warnings.push("⚠ Execution offline");
     const inviteLabel = inviteCode ? `Invite: ${inviteCode} · ` : "";

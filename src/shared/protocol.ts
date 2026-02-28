@@ -18,6 +18,23 @@ export const FileChangeSchema = z.object({
 
 export type FileChange = z.infer<typeof FileChangeSchema>;
 
+// ─── EvaluationResult ───
+
+export const EvaluationResultSchema = z.object({
+    verdict: z.enum(["greenlit", "redlit"]),
+    reasoning: z.string(),
+    conflicts: z.array(z.string()),
+    affectedFiles: z.array(z.string()),
+    executionHints: z.object({
+        estimatedComplexity: z.enum(["simple", "moderate", "complex"]),
+        requiresBuild: z.boolean(),
+        requiresTests: z.boolean(),
+        relatedContextFiles: z.array(z.string()),
+    }),
+});
+
+export type EvaluationResult = z.infer<typeof EvaluationResultSchema>;
+
 // ─── Client → Server Messages ───
 
 const JoinMessage = z.object({
@@ -201,7 +218,6 @@ const ExecutionCompleteMessage = z.object({
 const SystemStatusMessage = z.object({
     type: z.literal("system-status"),
     payload: z.object({
-        greenlightAvailable: z.boolean(),
         executionBackendAvailable: z.boolean(),
     }),
 });

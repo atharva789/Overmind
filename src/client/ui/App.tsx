@@ -32,7 +32,6 @@ interface AppState {
     execution: ExecutionState | null;
     memberExecutions: Record<string, ExecutionState>;
     viewingMember: string | null;
-    greenlightAvailable: boolean;
     executionBackendAvailable: boolean;
     errorMessage: string | null;
     partyEnded: boolean;
@@ -52,7 +51,6 @@ const initialState: AppState = {
     execution: null,
     memberExecutions: {},
     viewingMember: null,
-    greenlightAvailable: true,
     executionBackendAvailable: true,
     errorMessage: null,
     partyEnded: false,
@@ -84,7 +82,7 @@ type Action =
     | { type: "EXECUTION_COMPLETE"; promptId: string; files: FileChange[]; summary: string }
     | { type: "MEMBER_EXECUTION_UPDATE"; username: string; promptId: string; stage: string }
     | { type: "MEMBER_EXECUTION_COMPLETE"; username: string; promptId: string; files: FileChange[]; summary: string }
-    | { type: "SYSTEM_STATUS"; greenlightAvailable: boolean; executionBackendAvailable: boolean }
+    | { type: "SYSTEM_STATUS"; executionBackendAvailable: boolean }
     | { type: "SET_VIEWING"; username: string | null };
 
 function addOutput(
@@ -297,7 +295,6 @@ function reducer(state: AppState, action: Action): AppState {
         case "SYSTEM_STATUS":
             return {
                 ...state,
-                greenlightAvailable: action.greenlightAvailable,
                 executionBackendAvailable: action.executionBackendAvailable,
             };
 
@@ -487,7 +484,6 @@ export default function App({ connection, session, inviteCode }: AppProps): Reac
                 case "system-status":
                     dispatch({
                         type: "SYSTEM_STATUS",
-                        greenlightAvailable: msg.payload.greenlightAvailable,
                         executionBackendAvailable: msg.payload.executionBackendAvailable,
                     });
                     break;
@@ -615,7 +611,6 @@ export default function App({ connection, session, inviteCode }: AppProps): Reac
                 partyCode={state.partyCode}
                 memberCount={state.members.length}
                 connectionStatus={state.connectionStatus}
-                greenlightAvailable={state.greenlightAvailable}
                 executionBackendAvailable={state.executionBackendAvailable}
                 inviteCode={state.isHost ? inviteCode : undefined}
             />
