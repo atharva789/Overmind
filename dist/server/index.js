@@ -15,8 +15,8 @@ const evalQueues = new Map();
 const execQueues = new Map();
 const pendingParties = new Map();
 let maxMembers = MAX_MEMBERS_DEFAULT;
-// Modal orchestrator instance (null = local mode)
-const useModal = process.env["OVERMIND_LOCAL"] !== "1";
+// Modal orchestrator instance (null = local Gemini mode, which is the default)
+const useModal = process.env["OVERMIND_MODAL"] === "1";
 let orchestrator = null;
 if (useModal) {
     const projectRoot = process.env["OVERMIND_PROJECT_ROOT"] ?? process.cwd();
