@@ -22,6 +22,7 @@ import {
     MODAL_BRIDGE_URL,
     MODAL_BRIDGE_PORT,
     BRIDGE_HEALTH_INTERVAL_MS,
+    OVERMIND_ORCHESTRATOR_URL,
     ErrorCode,
 } from "../shared/constants.js";
 import { evaluatePrompt } from "./greenlight/agent.js";
@@ -95,6 +96,27 @@ function isLocalMode(): boolean {
 }
 
 /**
+ * Decide whether remote orchestrator mode is enabled.
+ * Does not validate the URL.
+ */
+function isRemoteOrchestratorEnabled(): boolean {
+    return OVERMIND_ORCHESTRATOR_URL.trim().length > 0;
+}
+
+/**
+ * Build the /health endpoint for the remote orchestrator.
+ * Does not perform network calls.
+ */
+function buildRemoteOrchestratorHealthUrl(): string {
+    const trimmed = OVERMIND_ORCHESTRATOR_URL.replace(/\/+$/u, "");
+    const executeSuffix = "/execute";
+    if (trimmed.endsWith(executeSuffix)) {
+        return `${trimmed.slice(0, -executeSuffix.length)}/health`;
+    }
+    return `${trimmed}/health`;
+}
+
+/**
  * Update execution backend availability and broadcast to members.
  * Does not perform any health checks itself.
  */
@@ -141,12 +163,25 @@ function broadcastSystemStatus(): void {
 }
 
 /**
- * Start the Modal bridge process and health checks if needed.
+ * Start execution health checks for the active backend.
  * Does not throw; failures mark execution backend unavailable.
  */
 async function initBridge(): Promise<void> {
     if (isLocalMode()) {
         setExecutionBackendAvailable(true);
+        return;
+    }
+
+    if (isRemoteOrchestratorEnabled()) {
+        await checkRemoteOrchestratorHealth();
+
+        if (bridgeHealthTimer) {
+            clearInterval(bridgeHealthTimer);
+        }
+
+        bridgeHealthTimer = setInterval(() => {
+            void checkRemoteOrchestratorHealth();
+        }, BRIDGE_HEALTH_INTERVAL_MS);
         return;
     }
 
@@ -204,6 +239,27 @@ async function checkBridgeHealth(): Promise<void> {
     } catch (err) {
         log(`Bridge health check failed: ${String(err)}`);
         setExecutionBackendAvailable(false);
+    }
+}
+
+/**
+ * Check remote orchestrator health and update availability.
+ * Does not throw; failures mark execution unavailable.
+ */
+async function checkRemoteOrchestratorHealth(): Promise<void> {
+    const url = buildRemoteOrchestratorHealthUrl();
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 5000);
+    try {
+        const res = await fetch(url, { signal: controller.signal });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = (await res.json()) as { llm_connected?: boolean };
+        setExecutionBackendAvailable(Boolean(data.llm_connected));
+    } catch (err) {
+        log(`Remote orchestrator health check failed: ${String(err)}`);
+        setExecutionBackendAvailable(false);
+    } finally {
+        clearTimeout(timer);
     }
 }
 
