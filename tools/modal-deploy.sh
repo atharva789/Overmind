@@ -24,13 +24,25 @@ require_command() {
     fi
 }
 
-# Extract the last URL from Modal deploy output.
+# Extract the last Modal web endpoint URL from deploy output.
 # Does not print raw deploy output.
 # Edge cases: Returns empty string when no URL is found.
 # Invariants: URLs are returned without surrounding whitespace.
 extract_url() {
     local output="$1"
-    echo "${output}" \
+    local run_url
+
+    run_url="$(printf "%s" "${output}" \
+        | grep -Eo 'https://[^[:space:]]+\\.modal\\.run[^[:space:]]*' \
+        | tail -1 \
+        | tr -d '\r')"
+
+    if [ -n "${run_url}" ]; then
+        echo "${run_url}"
+        return 0
+    fi
+
+    printf "%s" "${output}" \
         | grep -Eo 'https://[^[:space:]]+' \
         | tail -1 \
         | tr -d '\r'
@@ -46,7 +58,7 @@ deploy_and_capture_url() {
     local deploy_output
     local url
 
-    echo "Deploying ${label}..."
+    echo "Deploying ${label}..." >&2
     deploy_output="$(modal deploy "${file_path}" 2>&1)"
     url="$(extract_url "${deploy_output}")"
 
@@ -56,7 +68,13 @@ deploy_and_capture_url() {
         exit 1
     fi
 
-    echo "${label} URL: ${url}"
+    if ! echo "${url}" | grep -q "\\.modal\\.run"; then
+        echo "Detected URL does not look like a Modal endpoint." >&2
+        echo "Find the *.modal.run URL from deploy output." >&2
+        exit 1
+    fi
+
+    echo "${label} URL: ${url}" >&2
     echo "${url}"
 }
 
