@@ -7,11 +7,13 @@
 import { WebSocketServer, WebSocket } from "ws";
 import { customAlphabet } from "nanoid";
 import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { Party } from "./party.js";
 import { parseClientMessage } from "../shared/protocol.js";
 import { DEFAULT_PORT, JOIN_TIMEOUT_MS, CONNECTION_ID_LENGTH, PARTY_CODE_ALPHABET, PARTY_CODE_LENGTH, MAX_MEMBERS_DEFAULT, MODAL_BRIDGE_URL, MODAL_BRIDGE_PORT, BRIDGE_HEALTH_INTERVAL_MS, ErrorCode, } from "../shared/constants.js";
 import { evaluatePrompt } from "./greenlight/agent.js";
 import { Orchestrator } from "./orchestrator/index.js";
+import { solveMergeConflicts } from "./merge/index.js";
 const generateConnectionId = customAlphabet("abcdefghijklmnopqrstuvwxyz0123456789", CONNECTION_ID_LENGTH);
 const generatePartyCode = customAlphabet(PARTY_CODE_ALPHABET, PARTY_CODE_LENGTH);
 // ─── State ───
@@ -635,6 +637,18 @@ function drainPendingExecutions() {
     }
 }
 /**
+ * Read story.md from the project root for merge conflict context.
+ * Returns empty string if the file does not exist.
+ */
+function readStoryMd(projectRoot) {
+    try {
+        return readFileSync(`${projectRoot}/story.md`, "utf-8");
+    }
+    catch {
+        return "";
+    }
+}
+/**
  * Execute a prompt through the orchestrator and emit protocol messages.
  * Does not throw; errors are sent to the submitter.
  */
@@ -650,8 +664,74 @@ async function runExecutionFlow(party, entry, evaluation) {
         });
         return;
     }
+    let succeeded = false;
     for await (const event of orchestrator.execute(entry, evaluation)) {
+        if (event.type === "complete")
+            succeeded = true;
         handleExecutionEvent(party, entry, event);
+    }
+    if (succeeded) {
+        await runMergeConflictSolver(party, entry);
+    }
+}
+/**
+ * Run the merge conflict solver after execution completes.
+ * Sends stage/complete/error events to the submitter.
+ * Does not throw; all errors are caught and sent as error messages.
+ */
+async function runMergeConflictSolver(party, entry) {
+    const storyMd = readStoryMd(PROJECT_ROOT);
+    const input = {
+        conflictingFiles: [],
+        storyMd,
+        partyCode: party.code,
+    };
+    for await (const event of solveMergeConflicts(input, PROJECT_ROOT)) {
+        if (event.type === "stage") {
+            party.sendTo(entry.connectionId, {
+                type: "execution-update",
+                payload: {
+                    promptId: entry.promptId,
+                    stage: event.stage,
+                },
+            });
+        }
+        if (event.type === "complete") {
+            if (event.result.resolutions.length === 0)
+                return;
+            const n = event.result.resolutions.length;
+            const prUrl = event.result.prUrl ?? "N/A";
+            party.sendTo(entry.connectionId, {
+                type: "execution-complete",
+                payload: {
+                    promptId: entry.promptId,
+                    files: event.result.resolutions.map((r) => ({
+                        path: r.path,
+                        diff: "",
+                        linesAdded: 0,
+                        linesRemoved: 0,
+                    })),
+                    summary: `Conflicts resolved in ${n} files. PR: ${prUrl}`,
+                },
+            });
+            party.broadcast({
+                type: "activity",
+                payload: {
+                    username: entry.username,
+                    event: "merge conflicts resolved — PR opened",
+                    timestamp: Date.now(),
+                },
+            });
+        }
+        if (event.type === "error") {
+            party.sendTo(entry.connectionId, {
+                type: "error",
+                payload: {
+                    message: event.message,
+                    code: ErrorCode.MERGE_RESOLUTION_FAILED,
+                },
+            });
+        }
     }
 }
 /**

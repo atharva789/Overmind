@@ -15,6 +15,8 @@ export const ErrorCode = {
     PARTY_FULL: "PARTY_FULL",
     HOST_DISCONNECTED: "HOST_DISCONNECTED",
     EXECUTION_FAILED: "EXECUTION_FAILED",
+    MERGE_RESOLUTION_FAILED: "MERGE_RESOLUTION_FAILED",
+    MERGE_PR_FAILED: "MERGE_PR_FAILED",
 } as const;
 
 export type ErrorCodeValue =
@@ -38,7 +40,7 @@ export const RECONNECT_MAX_MS = 10000;
 
 // ─── Greenlight ───
 export const GREENLIGHT_BACKEND_DEFAULT = "glm";
-export const GEMINI_MODEL_DEFAULT = "gemini-2.0-flash";
+export const GEMINI_MODEL_DEFAULT = "gemini-2.5-flash";
 export const GLM_MODEL_DEFAULT = "glm-5.0";
 export const MAX_TOOL_ROUNDS = 5;
 export const EVAL_TIMEOUT_MS = 30000;
@@ -74,3 +76,11 @@ export const ALWAYS_SYNC_PATTERNS = (
     process.env["OVERMIND_ALWAYS_SYNC"]
         ?? "context.md,package.json,tsconfig.json"
 ).split(",");
+
+// ─── Merge conflict solver ───
+export const MERGE_GEMINI_MODEL =
+    process.env["GEMINI_MODEL"] ?? "gemini-2.5-flash";
+export const MERGE_MAX_RETRIES = 1;
+export const MERGE_LOG_TRUNCATE_CHARS = 200;
+export const MERGE_BRANCH_PREFIX = "overmind/merge-resolved";
+export const MERGE_FALLBACK_CONFIDENCE = "low" as const;

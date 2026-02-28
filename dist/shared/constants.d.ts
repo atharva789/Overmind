@@ -13,6 +13,8 @@ export declare const ErrorCode: {
     readonly PARTY_FULL: "PARTY_FULL";
     readonly HOST_DISCONNECTED: "HOST_DISCONNECTED";
     readonly EXECUTION_FAILED: "EXECUTION_FAILED";
+    readonly MERGE_RESOLUTION_FAILED: "MERGE_RESOLUTION_FAILED";
+    readonly MERGE_PR_FAILED: "MERGE_PR_FAILED";
 };
 export type ErrorCodeValue = (typeof ErrorCode)[keyof typeof ErrorCode];
 export declare const DEFAULT_PORT = 4444;
@@ -45,3 +47,8 @@ export declare const LOCK_TIMEOUT_MS: number;
 export declare const LOCK_RETRY_DELAY_MS = 500;
 export declare const BRIDGE_HEALTH_INTERVAL_MS: number;
 export declare const ALWAYS_SYNC_PATTERNS: string[];
+export declare const MERGE_GEMINI_MODEL: string;
+export declare const MERGE_MAX_RETRIES = 1;
+export declare const MERGE_LOG_TRUNCATE_CHARS = 200;
+export declare const MERGE_BRANCH_PREFIX = "overmind/merge-resolved";
+export declare const MERGE_FALLBACK_CONFIDENCE: "low";

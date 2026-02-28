@@ -14,6 +14,8 @@ export const ErrorCode = {
     PARTY_FULL: "PARTY_FULL",
     HOST_DISCONNECTED: "HOST_DISCONNECTED",
     EXECUTION_FAILED: "EXECUTION_FAILED",
+    MERGE_RESOLUTION_FAILED: "MERGE_RESOLUTION_FAILED",
+    MERGE_PR_FAILED: "MERGE_PR_FAILED",
 };
 // ─── Defaults ───
 export const DEFAULT_PORT = 4444;
@@ -52,4 +54,10 @@ export const LOCK_RETRY_DELAY_MS = 500;
 export const BRIDGE_HEALTH_INTERVAL_MS = 10 * SECOND_MS;
 export const ALWAYS_SYNC_PATTERNS = (process.env["OVERMIND_ALWAYS_SYNC"]
     ?? "context.md,package.json,tsconfig.json").split(",");
+// ─── Merge conflict solver ───
+export const MERGE_GEMINI_MODEL = process.env["GEMINI_MODEL"] ?? "gemini-2.0-flash";
+export const MERGE_MAX_RETRIES = 1;
+export const MERGE_LOG_TRUNCATE_CHARS = 200;
+export const MERGE_BRANCH_PREFIX = "overmind/merge-resolved";
+export const MERGE_FALLBACK_CONFIDENCE = "low";
 //# sourceMappingURL=constants.js.map
