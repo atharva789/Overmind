@@ -264,6 +264,7 @@ export function startServer() {
                     });
                     return;
                 }
+                log(`Story prompt received from ${member.username}`, party.code);
                 storyManager.enqueue({
                     partyCode: party.code,
                     connectionId,

@@ -473,7 +473,7 @@ export default function App({ connection, session }) {
             return _jsx(ExecutionView, { execution: state.execution });
         }
         // Show live story stream
-        if ((state.storyStreaming || state.storyContent)
+        if ((state.storyStreaming || state.storyContent || state.storyError)
             && state.currentPromptId === null) {
             return (_jsx(StoryView, { content: state.storyContent, streaming: state.storyStreaming, error: state.storyError }));
         }

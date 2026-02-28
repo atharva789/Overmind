@@ -639,7 +639,7 @@ export default function App({ connection, session }: AppProps): React.ReactEleme
 
         // Show live story stream
         if (
-            (state.storyStreaming || state.storyContent)
+            (state.storyStreaming || state.storyContent || state.storyError)
             && state.currentPromptId === null
         ) {
             return (

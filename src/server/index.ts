@@ -353,6 +353,11 @@ export function startServer(): WebSocketServer {
                     return;
                 }
 
+                log(
+                    `Story prompt received from ${member.username}`,
+                    party.code
+                );
+
                 storyManager.enqueue({
                     partyCode: party.code,
                     connectionId,
