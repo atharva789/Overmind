@@ -109,7 +109,11 @@ function isRemoteOrchestratorEnabled(): boolean {
  */
 function buildRemoteOrchestratorHealthUrl(): string {
     const trimmed = OVERMIND_ORCHESTRATOR_URL.replace(/\/+$/u, "");
+    const runSuffix = "/runs";
     const executeSuffix = "/execute";
+    if (trimmed.endsWith(runSuffix)) {
+        return `${trimmed.slice(0, -runSuffix.length)}/health`;
+    }
     if (trimmed.endsWith(executeSuffix)) {
         return `${trimmed.slice(0, -executeSuffix.length)}/health`;
     }
@@ -378,7 +382,7 @@ export function startServer(): WebSocketServer {
             parties.set(partyCode, party);
             orchestrators.set(
                 partyCode,
-                new Orchestrator(PROJECT_ROOT, MODAL_BRIDGE_URL)
+                new Orchestrator(PROJECT_ROOT)
             );
             log(`${username} created and joined as host`, partyCode);
 
@@ -763,11 +767,10 @@ export function startServer(): WebSocketServer {
                     });
                 }
             } catch (err) {
-                log(
-                    `Evaluation error: ${err instanceof Error ? err.message : String(err)
-                    }`,
-                    partyCode
-                );
+                const errorMessage = err instanceof Error
+                    ? err.message
+                    : String(err);
+                log(`Evaluation error: ${errorMessage}`, partyCode);
             }
         });
 

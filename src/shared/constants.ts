@@ -56,9 +56,7 @@ export const MODAL_BRIDGE_URL =
 
 // ─── Orchestrator ───
 export const OVERMIND_ORCHESTRATOR_URL =
-    process.env["OVERMIND_ORCHESTRATOR_URL"]
-        ?? "https://mercanmeh123--overmind-orchestrator-fastapi-app"
-            + ".modal.run/execute";
+    process.env["OVERMIND_ORCHESTRATOR_URL"] ?? "";
 export const AGENT_CMD =
     process.env["OVERMIND_AGENT_CMD"] ?? "claude";
 export const AGENT_ARGS = (
@@ -68,9 +66,12 @@ export const AGENT_ARGS = (
 export const AGENT_TIMEOUT_S = Number(
     process.env["OVERMIND_AGENT_TIMEOUT"] ?? "300"
 );
+export const OVERMIND_ORCHESTRATOR_POLL_MS = Number(
+    process.env["OVERMIND_ORCHESTRATOR_POLL_MS"] ?? "500"
+);
 export const OVERMIND_ORCHESTRATOR_TIMEOUT_MS = Number(
     process.env["OVERMIND_ORCHESTRATOR_TIMEOUT_MS"]
-        ?? String(AGENT_TIMEOUT_S * 1000)
+        ?? String(15 * MINUTE_MS)
 );
 export const OVERMIND_WRITE_ALLOWLIST = (
     process.env["OVERMIND_WRITE_ALLOWLIST"] ?? ""

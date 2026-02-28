@@ -1,13 +1,12 @@
 /**
- * Purpose: Run greenlit prompts via the remote orchestrator and apply results.
- * High-level behavior: Locks files, calls the orchestrator, applies diffs.
- * Assumptions: EvaluationResult.affectedFiles is a best-effort scope list.
+ * Purpose: Execute greenlit prompts via the Modal orchestrator and apply edits.
+ * High-level behavior: Locks files, creates runs, polls status, applies diffs.
+ * Assumptions: OVERMIND_ORCHESTRATOR_URL points to the orchestrator base URL.
  * Invariants: No out-of-scope files are written to the local project.
  */
 
 import fs from "node:fs";
-import path from "node:path";
-import { z } from "zod";
+import { nanoid } from "nanoid";
 import type { PromptEntry } from "../party.js";
 import type { EvaluationResult } from "../greenlight/evaluate.js";
 import {
@@ -15,37 +14,33 @@ import {
     LOCK_RETRY_DELAY_MS,
     LOCK_TIMEOUT_MS,
     LOG_TRUNCATE_CHARS,
+    OVERMIND_ORCHESTRATOR_POLL_MS,
     OVERMIND_ORCHESTRATOR_TIMEOUT_MS,
     OVERMIND_ORCHESTRATOR_URL,
     OVERMIND_WRITE_ALLOWLIST,
 } from "../../shared/constants.js";
 import { FileLockManager } from "./file-lock.js";
 import type { FileChange } from "./result.js";
-import { buildFullDiff } from "./result.js";
 import { packFiles } from "./file-sync.js";
+import {
+    ModalOrchestratorClient,
+    type RunCreatePayload,
+    type RunStatus,
+} from "./modal-orchestrator-client.js";
+import { buildAllowedPathChecker, normalizeRelativePath } from "./allowlist.js";
+import { sleep, summarizeChanges } from "./helpers.js";
+import {
+    STAGE_ACQUIRE,
+    STAGE_APPLY,
+    STAGE_SPAWN,
+    STAGE_SYNC,
+    isAllowedRemoteStage,
+} from "./stages.js";
+import { WorkspaceFiles } from "./workspace.js";
 
 const LOG_FILE = "orchestrator.log";
-
-const RemoteFileSchema = z.object({
-    path: z.string(),
-    content: z.string(),
-});
-
-const RemoteResponseSchema = z
-    .object({
-        success: z.boolean(),
-        error: z.string().optional(),
-        summary: z.string().optional(),
-        files: z.array(RemoteFileSchema).optional(),
-    })
-    .superRefine((data, ctx) => {
-        if (data.success && !data.files) {
-            ctx.addIssue({
-                code: z.ZodIssueCode.custom,
-                message: "files required when success is true",
-            });
-        }
-    });
+const DEFAULT_STORY =
+    "Overmind demo story: keep changes minimal, deterministic, and scoped.";
 
 export interface ExecutionEvent {
     type:
@@ -77,89 +72,31 @@ export interface AgentExecution {
     mode: "modal" | "local";
 }
 
-/**
- * Summarize change counts for human-readable reporting.
- * Does not include file names or content.
- */
-function summarizeChanges(changes: FileChange[]): string {
-    const added = changes.reduce((sum, file) => sum + file.linesAdded, 0);
-    const removed = changes.reduce((sum, file) => sum + file.linesRemoved, 0);
-    return `Applied ${changes.length} file(s) (+${added}/-${removed}).`;
+interface RunCompletion {
+    files: Array<{ path: string; content: string }>;
+    summary: string | null;
 }
 
-function normalizeRelativePath(relPath: string): string {
-    return relPath.replace(/\\/g, "/");
-}
-
-function isSuffixPattern(pattern: string): boolean {
-    return pattern.startsWith(".") && !pattern.includes("/");
-}
-
-function matchesAllowlistPattern(
-    relPath: string,
-    pattern: string
-): boolean {
-    const normalizedPath = normalizeRelativePath(relPath);
-    const normalizedPattern = normalizeRelativePath(pattern);
-
-    if (isSuffixPattern(normalizedPattern)) {
-        return normalizedPath.endsWith(normalizedPattern);
-    }
-    if (normalizedPattern.includes("/")) {
-        return normalizedPath === normalizedPattern;
-    }
-    return (
-        normalizedPath.endsWith(`/${normalizedPattern}`)
-        || normalizedPath === normalizedPattern
-    );
-}
-
-function buildAllowedPathChecker(
-    evaluation: EvaluationResult,
-    allowlistPatterns: string[]
-): (relPath: string) => boolean {
-    const allowedPaths = new Set(
-        evaluation.affectedFiles.map(normalizeRelativePath)
-    );
-    const normalizedAllowlist = allowlistPatterns.map((pattern) =>
-        normalizeRelativePath(pattern)
-    );
-
-    return (relPath: string) => {
-        const normalized = normalizeRelativePath(relPath);
-        if (allowedPaths.has(normalized)) return true;
-        return normalizedAllowlist.some((pattern) =>
-            matchesAllowlistPattern(normalized, pattern)
-        );
-    };
-}
-
-async function fetchWithTimeout(
-    url: string,
-    init: RequestInit,
-    timeoutMs: number
-): Promise<Response> {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    try {
-        return await fetch(url, { ...init, signal: controller.signal });
-    } finally {
-        clearTimeout(timer);
-    }
-}
+type RunPollEvent =
+    | ExecutionEvent
+    | { type: "run-complete"; result: RunCompletion };
 
 export class Orchestrator {
     private projectRoot: string;
     private fileLocks = new FileLockManager();
     private activeExecutions: Map<string, AgentExecution> = new Map();
+    private workspace: WorkspaceFiles;
 
-    constructor(projectRoot: string, _modalBridgeUrl: string) {
+    constructor(projectRoot: string) {
         this.projectRoot = projectRoot;
+        this.workspace = new WorkspaceFiles(projectRoot);
     }
 
     /**
      * Execute a greenlit prompt and yield progress events.
      * Does not broadcast to clients directly; caller maps events.
+     * Edge cases: Invalid responses or timeouts yield error events.
+     * Invariants: Locks are released and executions cleared on exit.
      */
     async *execute(
         prompt: PromptEntry,
@@ -169,156 +106,80 @@ export class Orchestrator {
         const mode = "modal";
 
         try {
-            yield { type: "stage", stage: "Acquiring file locks..." };
+            this.ensureOrchestratorConfigured();
+            yield { type: "stage", stage: STAGE_ACQUIRE };
 
-            const deadline = Date.now() + LOCK_TIMEOUT_MS;
-            let locked = false;
-            while (Date.now() < deadline) {
-                const result = this.fileLocks.tryAcquire(promptId, evaluation.affectedFiles);
-                if (result.acquired) {
-                    locked = true;
+            for await (const event of this.acquireLocks(
+                promptId,
+                evaluation.affectedFiles
+            )) {
+                yield event;
+            }
+
+            this.trackExecution(promptId, mode);
+            yield { type: "stage", stage: STAGE_SYNC };
+
+            const runId = nanoid();
+            const runPayload = this.buildRunPayload(
+                runId,
+                prompt,
+                evaluation
+            );
+            const client = this.createClient(promptId);
+
+            await client.createRun(runPayload.payload);
+            yield { type: "stage", stage: STAGE_SPAWN };
+
+            let runResult: RunCompletion | null = null;
+            for await (const event of this.pollRun(
+                promptId,
+                runId,
+                client,
+                STAGE_SPAWN
+            )) {
+                if (event.type === "run-complete") {
+                    runResult = event.result;
                     break;
                 }
-                yield { type: "queued", reason: "Waiting for file locks..." };
-                await new Promise((r) => setTimeout(r, LOCK_RETRY_DELAY_MS));
+                yield event;
             }
 
-            if (!locked) {
-                throw new Error("Timed out waiting for file locks");
+            if (!runResult) {
+                throw new Error("Run ended without completion payload");
             }
 
-            this.activeExecutions.set(promptId, {
+            const filtered = this.filterAllowedFiles(
                 promptId,
-                startedAt: Date.now(),
-                mode: "modal",
-            });
-
-            yield {
-                type: "stage",
-                stage: "Sending context to Global Orchestrator on Modal...",
-            };
-            const pack = packFiles(
-                this.projectRoot,
-                evaluation,
-                ALWAYS_SYNC_PATTERNS
+                runResult.files,
+                evaluation
             );
 
-            const filePayload = Object.entries(pack.files).map(
-                ([relPath, content]) => ({
-                    path: relPath,
-                    content,
-                })
+            const changes = await this.workspace.buildFileChanges(
+                runPayload.originals,
+                filtered.allowed
             );
 
-            const response = await fetchWithTimeout(
-                OVERMIND_ORCHESTRATOR_URL,
-                {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({
-                        prompt: prompt.content,
-                        files: filePayload,
-                        scope: evaluation.affectedFiles,
-                        promptId,
-                    }),
-                },
-                OVERMIND_ORCHESTRATOR_TIMEOUT_MS
+            yield { type: "stage", stage: STAGE_APPLY };
+            await this.workspace.applyChanges(filtered.allowed);
+
+            const summary = this.chooseSummary(
+                changes,
+                runResult.summary,
+                filtered.rejected
             );
-
-            if (!response.ok) {
-                throw new Error(
-                    "Failed to reach Global Orchestrator: "
-                        + `HTTP ${response.status}`
-                );
-            }
-
-            let rawResponse: unknown;
-            try {
-                rawResponse = await response.json();
-            } catch (err) {
-                this.log(
-                    promptId,
-                    mode,
-                    `invalid response: ${String(err)}`
-                );
-                throw new Error("Global Orchestrator returned invalid JSON");
-            }
-
-            const parsed = RemoteResponseSchema.safeParse(rawResponse);
-            if (!parsed.success) {
-                this.log(
-                    promptId,
-                    mode,
-                    `invalid response schema: ${parsed.error.message}`
-                );
-                throw new Error(
-                    "Global Orchestrator returned invalid response"
-                );
-            }
-
-            const data = parsed.data;
-
-            if (!data.success) {
-                const errorDetail = data.error ?? "Unknown error";
-                throw new Error(
-                    `Global Orchestrator execution failed: ${errorDetail}`
-                );
-            }
-
-            const updatedFilesRecord: Record<string, string> = {};
-            for (const filePayloadEntry of data.files ?? []) {
-                const normalized = normalizeRelativePath(
-                    filePayloadEntry.path
-                );
-                updatedFilesRecord[normalized] = filePayloadEntry.content;
-            }
-
-            const isAllowedPath = buildAllowedPathChecker(
-                evaluation,
-                OVERMIND_WRITE_ALLOWLIST
-            );
-            const rejectedPaths: string[] = [];
-            const filteredFilesRecord: Record<string, string> = {};
-
-            for (const [relPath, content] of Object.entries(
-                updatedFilesRecord
-            )) {
-                if (isAllowedPath(relPath)) {
-                    filteredFilesRecord[relPath] = content;
-                } else {
-                    rejectedPaths.push(relPath);
-                }
-            }
-
-            if (rejectedPaths.length > 0) {
-                this.log(
-                    promptId,
-                    mode,
-                    "warn: out-of-allowlist files ignored: "
-                        + rejectedPaths.join(", ")
-                );
-            }
-
-            const changes = this.collectChangedFiles(
-                pack.originals,
-                filteredFilesRecord
-            );
-
-            yield { type: "stage", stage: "Applying changes to codebase..." };
-            await this.applyChanges(filteredFilesRecord);
 
             yield {
                 type: "complete",
                 result: {
                     promptId,
                     files: changes,
-                    summary: rejectedPaths.length > 0
-                        ? summarizeChanges(changes)
-                        : data.summary || summarizeChanges(changes),
+                    summary,
                 },
             };
-        } catch (err) {
-            const message = err instanceof Error ? err.message : String(err);
+        } catch (error) {
+            const message = error instanceof Error
+                ? error.message
+                : String(error);
             this.log(promptId, mode, `error: ${message}`);
             yield { type: "error", message, recoverable: false };
         } finally {
@@ -328,27 +189,259 @@ export class Orchestrator {
     }
 
     /**
-     * Build file changes by comparing originals to updated contents.
-     * Does not include unchanged files.
+     * Acquire file locks with retry delays.
+     * Does not mutate files or enqueue executions.
+     * Edge cases: Throws on timeout expiry.
+     * Invariants: Locks are held only on successful acquisition.
      */
-    private collectChangedFiles(
-        originals: Record<string, string>,
-        updated: Record<string, string>
-    ): FileChange[] {
-        const changes: FileChange[] = [];
+    private async *acquireLocks(
+        promptId: string,
+        affectedFiles: string[]
+    ): AsyncGenerator<ExecutionEvent> {
+        const deadline = Date.now() + LOCK_TIMEOUT_MS;
 
-        for (const [relPath, after] of Object.entries(updated)) {
-            const before = originals[relPath] ?? "";
-            const diff = buildFullDiff(relPath, before, after);
-            if (diff) changes.push(diff);
+        while (Date.now() < deadline) {
+            const result = this.fileLocks.tryAcquire(
+                promptId,
+                affectedFiles
+            );
+            if (result.acquired) return;
+            yield { type: "queued", reason: "Waiting for file locks..." };
+            await sleep(LOCK_RETRY_DELAY_MS);
         }
 
-        return changes;
+        throw new Error("Timed out waiting for file locks");
+    }
+
+    /**
+     * Ensure the orchestrator URL is configured.
+     * Does not attempt fallback behavior.
+     * Edge cases: Throws when URL is missing.
+     * Invariants: No remote calls occur when configuration is missing.
+     */
+    private ensureOrchestratorConfigured(): void {
+        if (!OVERMIND_ORCHESTRATOR_URL.trim()) {
+            throw new Error("OVERMIND_ORCHESTRATOR_URL is not configured");
+        }
+    }
+
+    /**
+     * Create a ModalOrchestratorClient bound to this prompt.
+     * Does not log prompt content.
+     * Edge cases: Strips trailing /runs if present.
+     * Invariants: Client uses the normalized base URL.
+     */
+    private createClient(promptId: string): ModalOrchestratorClient {
+        const normalizedUrl = OVERMIND_ORCHESTRATOR_URL
+            .replace(/\/+$/u, "")
+            .replace(/\/runs$/u, "");
+        const logFn = (message: string) =>
+            this.log(promptId, "modal", message);
+        return new ModalOrchestratorClient(normalizedUrl, logFn);
+    }
+
+    /**
+     * Build the run payload and capture original file contents.
+     * Does not mutate the packFiles output.
+     * Edge cases: Missing STORY.md falls back to a default story.
+     * Invariants: Payload files are derived from packFiles.
+     */
+    private buildRunPayload(
+        runId: string,
+        prompt: PromptEntry,
+        evaluation: EvaluationResult
+    ): { payload: RunCreatePayload; originals: Record<string, string> } {
+        const pack = packFiles(
+            this.projectRoot,
+            evaluation,
+            ALWAYS_SYNC_PATTERNS
+        );
+
+        const story = this.workspace.loadStory(
+            DEFAULT_STORY,
+            (message) => this.log(prompt.promptId, "modal", message)
+        );
+        const payload: RunCreatePayload = {
+            runId,
+            promptId: prompt.promptId,
+            prompt: prompt.content,
+            story,
+            scope: [...evaluation.affectedFiles],
+            files: { ...pack.files },
+        };
+
+        return { payload, originals: { ...pack.originals } };
+    }
+
+    /**
+     * Iterate run status updates and emit stage events.
+     * Does not handle local file writes.
+     * Edge cases: Throws on failed or canceled runs.
+     * Invariants: Completion yields a run-complete event.
+     */
+    private async *pollRun(
+        promptId: string,
+        runId: string,
+        client: ModalOrchestratorClient,
+        initialStage: string | null
+    ): AsyncGenerator<RunPollEvent> {
+        const startTime = Date.now();
+        let lastStage: string | null = initialStage;
+
+        while (true) {
+            const elapsed = Date.now() - startTime;
+            if (elapsed > OVERMIND_ORCHESTRATOR_TIMEOUT_MS) {
+                await this.cancelRunSafely(promptId, runId, client);
+                throw new Error("Orchestrator run timed out");
+            }
+
+            const status = await client.getRun(runId);
+            this.logRunDetail(promptId, status);
+
+            const stage = this.normalizeStage(status.stage);
+            if (stage && stage !== lastStage) {
+                lastStage = stage;
+                yield { type: "stage", stage };
+            }
+
+            if (status.status === "completed") {
+                const files = status.files ?? [];
+                const summary = status.summary ?? null;
+                yield { type: "run-complete", result: { files, summary } };
+                return;
+            }
+
+            if (status.status === "failed" || status.status === "canceled") {
+                const errorDetail = status.error
+                    ?? `Run ${status.status}`;
+                throw new Error(errorDetail);
+            }
+
+            await sleep(OVERMIND_ORCHESTRATOR_POLL_MS);
+        }
+    }
+
+    /**
+     * Filter remote file updates by allowed scope.
+     * Does not mutate the input file list.
+     * Edge cases: Missing allowlist still allows affected files.
+     * Invariants: Returned maps contain normalized paths only.
+     */
+    private filterAllowedFiles(
+        promptId: string,
+        files: Array<{ path: string; content: string }>,
+        evaluation: EvaluationResult
+    ): { allowed: Record<string, string>; rejected: string[] } {
+        const isAllowedPath = buildAllowedPathChecker(
+            evaluation,
+            OVERMIND_WRITE_ALLOWLIST
+        );
+        const allowed: Record<string, string> = {};
+        const rejected: string[] = [];
+
+        for (const fileEntry of files) {
+            const normalized = normalizeRelativePath(fileEntry.path);
+            if (isAllowedPath(normalized)) {
+                allowed[normalized] = fileEntry.content;
+            } else {
+                rejected.push(normalized);
+            }
+        }
+
+        if (rejected.length > 0) {
+            this.log(
+                promptId,
+                "modal",
+                `warn: out-of-allowlist files ignored: ${rejected.join(", ")}`
+            );
+        }
+
+        return { allowed, rejected };
+    }
+
+
+    /**
+     * Choose a summary string for execution completion.
+     * Does not log or mutate inputs.
+     * Edge cases: Falls back when summary is empty.
+     * Invariants: Returned summary is always non-empty.
+     */
+    private chooseSummary(
+        changes: FileChange[],
+        summary: string | null,
+        rejectedPaths: string[]
+    ): string {
+        if (rejectedPaths.length > 0) {
+            return summarizeChanges(changes);
+        }
+        if (summary && summary.trim()) return summary.trim();
+        return summarizeChanges(changes);
+    }
+
+    /**
+     * Cancel a run without throwing on failure.
+     * Does not rethrow cancel errors.
+     * Edge cases: Logs any cancel failures.
+     * Invariants: Never interrupts the caller with cancel errors.
+     */
+    private async cancelRunSafely(
+        promptId: string,
+        runId: string,
+        client: ModalOrchestratorClient
+    ): Promise<void> {
+        try {
+            await client.cancelRun(runId);
+        } catch (error) {
+            this.log(
+                promptId,
+                "modal",
+                `cancel failed: ${String(error)}`
+            );
+        }
+    }
+
+    /**
+     * Log run detail messages without exposing prompt content.
+     * Does not emit UI stages.
+     * Edge cases: Ignores empty detail values.
+     * Invariants: Logs include promptId context.
+     */
+    private logRunDetail(promptId: string, status: RunStatus): void {
+        if (!status.detail) return;
+        this.log(promptId, "modal", `detail: ${status.detail}`);
+    }
+
+    /**
+     * Normalize a remote stage value.
+     * Does not mutate input values.
+     * Edge cases: Unknown stages return null.
+     * Invariants: Only known stages are forwarded.
+     */
+    private normalizeStage(stage?: string): string | null {
+        if (!stage) return null;
+        if (isAllowedRemoteStage(stage)) return stage;
+        return null;
+    }
+
+    /**
+     * Track an execution in the active map.
+     * Does not broadcast any status messages.
+     * Edge cases: Overwrites existing records for the same prompt.
+     * Invariants: Active executions contain promptId and mode.
+     */
+    private trackExecution(promptId: string, mode: "modal" | "local"): void {
+        this.activeExecutions.set(promptId, {
+            promptId,
+            startedAt: Date.now(),
+            mode,
+        });
     }
 
     /**
      * Terminate an execution by prompt ID.
-     * Only affects Modal executions with a sandbox ID.
+     * Does not attempt remote cancellations.
+     * Edge cases: Missing prompt IDs are ignored.
+     * Invariants: Locks are released for the prompt.
      */
     async cancel(promptId: string): Promise<void> {
         this.fileLocks.release(promptId);
@@ -358,6 +451,8 @@ export class Orchestrator {
     /**
      * Return a snapshot of active executions.
      * Does not expose internal mutable state.
+     * Edge cases: Empty map returns an empty array.
+     * Invariants: Snapshot values are copied.
      */
     getActiveExecutions(): AgentExecution[] {
         return [...this.activeExecutions.values()];
@@ -365,6 +460,9 @@ export class Orchestrator {
 
     /**
      * Shut down all active executions and release locks.
+     * Does not attempt remote cancellations.
+     * Edge cases: Clears all active executions.
+     * Invariants: All tracked locks are released.
      */
     async shutdown(): Promise<void> {
         const executions = [...this.activeExecutions.values()];
@@ -377,50 +475,17 @@ export class Orchestrator {
     /**
      * Append an orchestrator event to the log file.
      * Does not throw on IO failures.
+     * Edge cases: Truncates long messages for privacy.
+     * Invariants: Logs always include timestamps.
      */
     private log(promptId: string, mode: string, message: string): void {
         const ts = new Date().toISOString();
-        const line = `[${ts}] [${promptId}] [${mode}] ${message.substring(0, LOG_TRUNCATE_CHARS)}\n`;
+        const line = `[${ts}] [${promptId}] [${mode}] `
+            + `${message.substring(0, LOG_TRUNCATE_CHARS)}\n`;
         try {
             fs.appendFileSync(LOG_FILE, line);
         } catch {
             // Logging failures must not crash execution.
-        }
-    }
-
-    /**
-     * Ensure a directory exists by creating it recursively.
-     * Does not remove existing files.
-     */
-    private ensureDir(dirPath: string): void {
-        if (!fs.existsSync(dirPath)) {
-            fs.mkdirSync(dirPath, { recursive: true });
-        }
-    }
-
-    /**
-     * Resolve a relative path and prevent root escape.
-     * Throws if the path escapes the project root.
-     */
-    private safeResolve(projectRoot: string, relPath: string): string {
-        const absolute = path.resolve(projectRoot, relPath);
-        if (!absolute.startsWith(projectRoot)) {
-            throw new Error("Path escapes project root");
-        }
-        return absolute;
-    }
-
-    /**
-     * Apply updated file contents to the local project.
-     * Does not write files outside the project root.
-     */
-    private async applyChanges(
-        updatedFiles: Record<string, string>
-    ): Promise<void> {
-        for (const [relPath, content] of Object.entries(updatedFiles)) {
-            const absPath = this.safeResolve(this.projectRoot, relPath);
-            this.ensureDir(path.dirname(absPath));
-            fs.writeFileSync(absPath, content, "utf-8");
         }
     }
 }
