@@ -47,10 +47,18 @@ const HostVerdictSchema = z.object({
   }),
 });
 
+const StatusUpdateSchema = z.object({
+  type: z.literal("status-update"),
+  payload: z.object({
+    status: z.enum(["typing", "idle"]),
+  }),
+});
+
 export const ClientMessageSchema = z.discriminatedUnion("type", [
   JoinSchema,
   PromptSubmitSchema,
   HostVerdictSchema,
+  StatusUpdateSchema,
 ]);
 
 export type ClientMessage = z.infer<typeof ClientMessageSchema>;
@@ -148,10 +156,19 @@ const ErrorSchema = z.object({
   }),
 });
 
+const MemberStatusSchema = z.object({
+  type: z.literal("member-status"),
+  payload: z.object({
+    username: z.string(),
+    status: z.string(),
+  }),
+});
+
 export const ServerMessageSchema = z.discriminatedUnion("type", [
   JoinAckSchema,
   MemberJoinedSchema,
   MemberLeftSchema,
+  MemberStatusSchema,
   PromptQueuedSchema,
   PromptGreenlitSchema,
   PromptRedlitSchema,
