@@ -1,5 +1,14 @@
 #!/usr/bin/env node
 
+import { config } from "dotenv";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
+
+// Load .env from the Overmind installation directory, not CWD
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+config({ path: join(__dirname, "..", ".env") });
+
 import { Command } from "commander";
 import os from "node:os";
 import React from "react";

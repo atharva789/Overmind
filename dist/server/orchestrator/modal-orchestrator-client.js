@@ -135,7 +135,7 @@ export class ModalOrchestratorClient {
     constructor(baseUrl, log) {
         this.baseUrl = baseUrl.replace(/\/+$/u, "");
         this.log = log;
-        this.timeoutMs = OVERMIND_ORCHESTRATOR_TIMEOUT_MS;
+        this.timeoutMs = OVERMIND_ORCHESTRATOR_TIMEOUT_MS();
     }
     /**
      * Create a new run in the orchestrator.

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 from datetime import datetime, timezone
 
 import modal
@@ -83,7 +84,7 @@ class LLMServer:
         from vllm.engine.async_llm_engine import AsyncLLMEngine
         from vllm.utils import random_uuid
 
-        log_event("initializing vLLM AsyncLLMEngine")
+        log_event(f"initializing vLLM AsyncLLMEngine model={MODEL_ID} tp=1 gpu_mem=0.90")
         engine_args = AsyncEngineArgs(
             model=MODEL_ID,
             tensor_parallel_size=1,
@@ -228,13 +229,18 @@ class LLMServer:
                     detail="messages must be a non-empty list",
                 )
 
+            log_event(f"chat_completions: incoming request messages={len(messages)} model={body.get('model', 'N/A')}")
+
             await self._ensure_engine()
             tokenizer = self.engine.get_tokenizer()
             prompt = tokenizer.apply_chat_template(
-                messages, 
-                tokenize=False, 
+                messages,
+                tokenize=False,
                 add_generation_prompt=True
             )
+
+            log_event(f"chat_completions: prompt_len={len(prompt)} chars, starting generation")
+            t0 = time.monotonic()
 
             try:
                 text = await self._generate.local(
@@ -244,11 +250,14 @@ class LLMServer:
                     seed=body.get("seed", 0),
                 )
             except Exception as exc:
-                log_event(f"generation failed: {exc}")
+                log_event(f"generation failed after {time.monotonic() - t0:.1f}s: {exc}")
                 raise HTTPException(
                     status_code=503,
                     detail="Generation failed; engine restarting.",
                 )
+
+            elapsed = time.monotonic() - t0
+            log_event(f"chat_completions: done in {elapsed:.1f}s content_len={len(text)}")
 
             return {
                 "choices": [

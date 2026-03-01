@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import traceback
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -20,11 +21,11 @@ from pydantic import BaseModel, ValidationError
 
 APP_NAME = "overmind-orchestrator"
 RUN_STORE_NAME = "overmind-orchestrator-runs"
-DEFAULT_LLM_URL = "https://mercanmeh123--overmind-llm-llmserver-serve.modal.run"
+DEFAULT_LLM_URL = "https://atharva789--overmind-llm-llmserver-serve.modal.run"
 MODEL_ID = os.environ.get("MODEL_ID", "openai/gpt-oss-20b")
 LLM_URL = os.environ.get("OVERMIND_LLM_URL", DEFAULT_LLM_URL).rstrip("/")
 LLM_TIMEOUT_S = int(os.environ.get("OVERMIND_LLM_TIMEOUT_S", "3600"))
-LOG_TRUNCATE_CHARS = 200
+LOG_TRUNCATE_CHARS = 1000
 LLM_SECRET_NAME = "overmind-llm-auth"
 
 STAGE_SPAWNING = "Spawning sandbox..."
@@ -321,8 +322,12 @@ async def call_llm(req: RunCreateRequest) -> LlmResponse:
     }
 
     url = f"{LLM_URL}/v1/chat/completions"
+    user_prompt_len = len(build_user_prompt(req))
+    log(f"call_llm: POST {url} model={MODEL_ID} prompt_len={user_prompt_len}")
+
     async with httpx.AsyncClient(timeout=LLM_TIMEOUT_S) as client:
         response = await client.post(url, headers=headers, json=payload)
+        log(f"call_llm: response status={response.status_code}")
         response.raise_for_status()
         data = response.json()
 
@@ -334,9 +339,18 @@ async def call_llm(req: RunCreateRequest) -> LlmResponse:
     if not isinstance(content, str) or not content.strip():
         raise ValueError("LLM response missing content")
 
+    log(f"call_llm: raw content ({len(content)} chars): {content[:500]}")
+
     cleaned = strip_code_fences(content)
-    parsed = json.loads(cleaned)
-    return validate_llm_response(parsed)
+    try:
+        parsed = json.loads(cleaned)
+    except json.JSONDecodeError as exc:
+        log(f"call_llm: JSON parse failed: {exc} | cleaned[:200]={cleaned[:200]}")
+        raise
+
+    result = validate_llm_response(parsed)
+    log(f"call_llm: valid response summary_len={len(result.summary)} files={len(result.files)}")
+    return result
 
 
 @app.function(
@@ -351,15 +365,18 @@ async def run_worker(run_id: str, req: RunCreateRequest) -> None:
     Edge cases: Cancels early if run is marked canceled.
     Invariants: Updates run status on all exit paths.
     """
+    log(f"run_worker: start run_id={run_id} prompt_len={len(req.prompt)} files={len(req.files)}")
     mark_run_running(run_id)
 
     if should_cancel(run_id):
+        log(f"run_worker: run_id={run_id} canceled before execution")
         mark_run_canceled(run_id, "Run canceled before execution.")
         return
 
     try:
         result = await call_llm(req)
     except (ValidationError, json.JSONDecodeError, ValueError) as exc:
+        log(f"run_worker: run_id={run_id} parse/validation error:\n{traceback.format_exc()}")
         mark_run_failed(
             run_id,
             STAGE_EXTRACTING,
@@ -368,6 +385,7 @@ async def run_worker(run_id: str, req: RunCreateRequest) -> None:
         )
         return
     except Exception as exc:
+        log(f"run_worker: run_id={run_id} execution error:\n{traceback.format_exc()}")
         mark_run_failed(
             run_id,
             STAGE_WORKING,
@@ -376,6 +394,7 @@ async def run_worker(run_id: str, req: RunCreateRequest) -> None:
         )
         return
 
+    log(f"run_worker: run_id={run_id} completed summary_len={len(result.summary)} files={len(result.files)}")
     mark_run_completed(run_id, result)
 
 

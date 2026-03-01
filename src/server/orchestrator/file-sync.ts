@@ -214,7 +214,7 @@ function buildFileMaps(
 export function packFiles(
     projectRoot: string,
     evaluation: EvaluationResult,
-    alwaysSyncPatterns: string[] = ALWAYS_SYNC_PATTERNS
+    alwaysSyncPatterns: string[] = ALWAYS_SYNC_PATTERNS()
 ): FilePack {
     const required = collectRequiredFiles(
         projectRoot,

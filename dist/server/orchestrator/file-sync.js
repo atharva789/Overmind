@@ -159,7 +159,7 @@ function buildFileMaps(projectRoot, required, affectedFiles) {
  * Pack files for execution based on evaluation hints and scope.
  * Does not include the entire repository.
  */
-export function packFiles(projectRoot, evaluation, alwaysSyncPatterns = ALWAYS_SYNC_PATTERNS) {
+export function packFiles(projectRoot, evaluation, alwaysSyncPatterns = ALWAYS_SYNC_PATTERNS()) {
     const required = collectRequiredFiles(projectRoot, evaluation, alwaysSyncPatterns);
     return buildFileMaps(projectRoot, required, evaluation.affectedFiles);
 }

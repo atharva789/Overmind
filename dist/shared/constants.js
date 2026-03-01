@@ -3,6 +3,9 @@
  * High-level behavior: Exports deterministic values used by server/client.
  * Assumptions: Environment variables are optional and validated at runtime.
  * Invariants: Constants must not include runtime side effects.
+ *
+ * NOTE: All env-dependent values use getter functions so they read process.env
+ * lazily (after dotenv has loaded), not at module import time.
  */
 // ─── Error codes ───
 export const ErrorCode = {
@@ -32,7 +35,7 @@ export const RECONNECT_INITIAL_MS = 1000;
 export const RECONNECT_MAX_MS = 10000;
 // ─── Greenlight ───
 export const GREENLIGHT_BACKEND_DEFAULT = "gemini";
-export const GEMINI_MODEL_DEFAULT = "gemini-3.0-flash";
+export const GEMINI_MODEL_DEFAULT = "gemini-3-flash-preview";
 export const GLM_MODEL_DEFAULT = "glm-5.0";
 export const MAX_TOOL_ROUNDS = 5;
 export const EVAL_TIMEOUT_MS = 30000;
@@ -40,31 +43,62 @@ export const MAX_FILE_READ_LINES = 500;
 export const MAX_SEARCH_RESULTS = 50;
 export const LOG_TRUNCATE_CHARS = 200;
 export const MAX_CONTEXT_PAYLOAD_CHARS = 20000;
+// ─── Env helpers (lazy reads) ───
+function env(key, fallback = "") {
+    return process.env[key] ?? fallback;
+}
+function envNum(key, fallback) {
+    const v = process.env[key];
+    return v !== undefined ? Number(v) : fallback;
+}
 // ─── Modal bridge ───
-export const MODAL_BRIDGE_PORT = Number(process.env["OVERMIND_BRIDGE_PORT"] ?? "8377");
-export const MODAL_BRIDGE_URL = `http://localhost:${MODAL_BRIDGE_PORT}`;
+export function get_MODAL_BRIDGE_PORT() { return envNum("OVERMIND_BRIDGE_PORT", 8377); }
+export function get_MODAL_BRIDGE_URL() { return `http://localhost:${get_MODAL_BRIDGE_PORT()}`; }
 // ─── Merge conflict solver ───
-export const CONFLICT_RESOLVER_URL = process.env["CONFLICT_RESOLVER_URL"] ?? "";
-export const GITHUB_TOKEN = process.env["GITHUB_TOKEN"] ?? "";
-export const GITHUB_REPO = process.env["GITHUB_REPO"] ?? ""; // format: "owner/repo"
-export const GITHUB_BASE_BRANCH = process.env["GITHUB_BASE_BRANCH"] ?? "main";
+export function get_CONFLICT_RESOLVER_URL() { return env("CONFLICT_RESOLVER_URL"); }
+export function get_GITHUB_TOKEN() { return env("GITHUB_TOKEN"); }
+export function get_GITHUB_REPO() { return env("GITHUB_REPO"); }
+export function get_GITHUB_BASE_BRANCH() { return env("GITHUB_BASE_BRANCH", "main"); }
 // ─── Orchestrator ───
-export const OVERMIND_ORCHESTRATOR_URL = process.env["OVERMIND_ORCHESTRATOR_URL"] ?? "";
-export const AGENT_CMD = process.env["OVERMIND_AGENT_CMD"] ?? "claude";
-export const AGENT_ARGS = (process.env["OVERMIND_AGENT_ARGS"]
-    ?? "--dangerously-skip-permissions -p").split(" ");
-export const AGENT_TIMEOUT_S = Number(process.env["OVERMIND_AGENT_TIMEOUT"] ?? "300");
-export const OVERMIND_ORCHESTRATOR_POLL_MS = Number(process.env["OVERMIND_ORCHESTRATOR_POLL_MS"] ?? "500");
-export const OVERMIND_ORCHESTRATOR_TIMEOUT_MS = Number(process.env["OVERMIND_ORCHESTRATOR_TIMEOUT_MS"]
-    ?? String(15 * MINUTE_MS));
-export const OVERMIND_WRITE_ALLOWLIST = (process.env["OVERMIND_WRITE_ALLOWLIST"] ?? "")
-    .split(",")
-    .map((entry) => entry.trim())
-    .filter((entry) => entry.length > 0);
-export const MAX_CONCURRENT_SANDBOXES = Number(process.env["OVERMIND_MAX_AGENTS"] ?? "3");
+export function get_OVERMIND_ORCHESTRATOR_URL() { return env("OVERMIND_ORCHESTRATOR_URL"); }
+export function get_AGENT_CMD() { return env("OVERMIND_AGENT_CMD", "claude"); }
+export function get_AGENT_ARGS() {
+    return env("OVERMIND_AGENT_ARGS", "--dangerously-skip-permissions -p").split(" ");
+}
+export function get_AGENT_TIMEOUT_S() { return envNum("OVERMIND_AGENT_TIMEOUT", 300); }
+export function get_OVERMIND_ORCHESTRATOR_POLL_MS() { return envNum("OVERMIND_ORCHESTRATOR_POLL_MS", 500); }
+export function get_OVERMIND_ORCHESTRATOR_TIMEOUT_MS() {
+    return envNum("OVERMIND_ORCHESTRATOR_TIMEOUT_MS", 15 * MINUTE_MS);
+}
+export function get_OVERMIND_WRITE_ALLOWLIST() {
+    return env("OVERMIND_WRITE_ALLOWLIST")
+        .split(",")
+        .map((entry) => entry.trim())
+        .filter((entry) => entry.length > 0);
+}
+export function get_MAX_CONCURRENT_SANDBOXES() { return envNum("OVERMIND_MAX_AGENTS", 3); }
 export const LOCK_TIMEOUT_MS = 5 * MINUTE_MS;
 export const LOCK_RETRY_DELAY_MS = 500;
 export const BRIDGE_HEALTH_INTERVAL_MS = 10 * SECOND_MS;
-export const ALWAYS_SYNC_PATTERNS = (process.env["OVERMIND_ALWAYS_SYNC"] ??
-    "context.md,package.json,tsconfig.json").split(",");
+export function get_ALWAYS_SYNC_PATTERNS() {
+    return env("OVERMIND_ALWAYS_SYNC", "context.md,package.json,tsconfig.json").split(",");
+}
+// ─── Backward-compatible aliases (lazy via getter) ───
+// These exist so existing code that imports e.g. MODAL_BRIDGE_PORT still works.
+// The value is read fresh from process.env on every access.
+export { get_MODAL_BRIDGE_PORT as MODAL_BRIDGE_PORT };
+export { get_MODAL_BRIDGE_URL as MODAL_BRIDGE_URL };
+export { get_CONFLICT_RESOLVER_URL as CONFLICT_RESOLVER_URL };
+export { get_GITHUB_TOKEN as GITHUB_TOKEN };
+export { get_GITHUB_REPO as GITHUB_REPO };
+export { get_GITHUB_BASE_BRANCH as GITHUB_BASE_BRANCH };
+export { get_OVERMIND_ORCHESTRATOR_URL as OVERMIND_ORCHESTRATOR_URL };
+export { get_AGENT_CMD as AGENT_CMD };
+export { get_AGENT_ARGS as AGENT_ARGS };
+export { get_AGENT_TIMEOUT_S as AGENT_TIMEOUT_S };
+export { get_OVERMIND_ORCHESTRATOR_POLL_MS as OVERMIND_ORCHESTRATOR_POLL_MS };
+export { get_OVERMIND_ORCHESTRATOR_TIMEOUT_MS as OVERMIND_ORCHESTRATOR_TIMEOUT_MS };
+export { get_OVERMIND_WRITE_ALLOWLIST as OVERMIND_WRITE_ALLOWLIST };
+export { get_MAX_CONCURRENT_SANDBOXES as MAX_CONCURRENT_SANDBOXES };
+export { get_ALWAYS_SYNC_PATTERNS as ALWAYS_SYNC_PATTERNS };
 //# sourceMappingURL=constants.js.map

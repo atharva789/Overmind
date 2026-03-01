@@ -193,7 +193,7 @@ export class ModalOrchestratorClient {
     constructor(baseUrl: string, log: LogFn) {
         this.baseUrl = baseUrl.replace(/\/+$/u, "");
         this.log = log;
-        this.timeoutMs = OVERMIND_ORCHESTRATOR_TIMEOUT_MS;
+        this.timeoutMs = OVERMIND_ORCHESTRATOR_TIMEOUT_MS();
     }
 
     /**

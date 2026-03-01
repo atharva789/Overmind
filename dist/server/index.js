@@ -54,14 +54,14 @@ function isLocalMode() {
  * Does not validate the URL.
  */
 function isRemoteOrchestratorEnabled() {
-    return OVERMIND_ORCHESTRATOR_URL.trim().length > 0;
+    return OVERMIND_ORCHESTRATOR_URL().trim().length > 0;
 }
 /**
  * Build the /health endpoint for the remote orchestrator.
  * Does not perform network calls.
  */
 function buildRemoteOrchestratorHealthUrl() {
-    const trimmed = OVERMIND_ORCHESTRATOR_URL.replace(/\/+$/u, "");
+    const trimmed = OVERMIND_ORCHESTRATOR_URL().replace(/\/+$/u, "");
     const runSuffix = "/runs";
     const executeSuffix = "/execute";
     if (trimmed.endsWith(runSuffix)) {
@@ -146,7 +146,7 @@ async function initBridge() {
 function spawnBridgeProcess() {
     if (bridgeProcess)
         return;
-    bridgeProcess = spawn("python", ["-m", "uvicorn", "bridge:app", "--port", String(MODAL_BRIDGE_PORT)], {
+    bridgeProcess = spawn("python3", ["-m", "uvicorn", "bridge:app", "--port", String(MODAL_BRIDGE_PORT())], {
         cwd: "modal-bridge",
         env: { ...process.env },
         stdio: "ignore",
@@ -167,7 +167,7 @@ function spawnBridgeProcess() {
  */
 async function checkBridgeHealth() {
     try {
-        const res = await fetch(`${MODAL_BRIDGE_URL}/health`);
+        const res = await fetch(`${MODAL_BRIDGE_URL()}/health`);
         if (!res.ok)
             throw new Error(`HTTP ${res.status}`);
         const data = (await res.json());
@@ -562,6 +562,26 @@ export function startServer() {
                 const featureResult = results.find(r => r.queryId === queryId);
                 // 2-second UI delay to let the user see their prompt
                 await sleep(2000);
+                // Handle rejected (off-topic) queries — send redlit and skip execution
+                if (featureResult?.type === "rejected") {
+                    party.sendTo(connectionId, {
+                        type: "prompt-redlit",
+                        payload: {
+                            promptId: entry.promptId,
+                            reasoning: featureResult.reason ?? "Query is off-topic for this project.",
+                            conflicts: [],
+                        },
+                    });
+                    party.broadcast({
+                        type: "activity",
+                        payload: {
+                            username: entry.username,
+                            event: `'s prompt was rejected ✗`,
+                            timestamp: Date.now(),
+                        },
+                    });
+                    return;
+                }
                 if (featureResult?.type === "new_feature") {
                     party.sendTo(connectionId, {
                         type: "feature-created",

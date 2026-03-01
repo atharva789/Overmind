@@ -108,7 +108,7 @@ export class Orchestrator {
      * Invariants: No remote calls occur when configuration is missing.
      */
     ensureOrchestratorConfigured() {
-        if (!OVERMIND_ORCHESTRATOR_URL.trim()) {
+        if (!OVERMIND_ORCHESTRATOR_URL().trim()) {
             throw new Error("OVERMIND_ORCHESTRATOR_URL is not configured");
         }
     }
@@ -119,7 +119,7 @@ export class Orchestrator {
      * Invariants: Client uses the normalized base URL.
      */
     createClient(promptId) {
-        const normalizedUrl = OVERMIND_ORCHESTRATOR_URL
+        const normalizedUrl = OVERMIND_ORCHESTRATOR_URL()
             .replace(/\/+$/u, "")
             .replace(/\/runs$/u, "");
         const logFn = (message) => this.log(promptId, "modal", message);
@@ -132,7 +132,7 @@ export class Orchestrator {
      * Invariants: Payload files are derived from packFiles.
      */
     buildRunPayload(runId, prompt, evaluation) {
-        const pack = packFiles(this.projectRoot, evaluation, ALWAYS_SYNC_PATTERNS);
+        const pack = packFiles(this.projectRoot, evaluation, ALWAYS_SYNC_PATTERNS());
         const story = this.workspace.loadStory(DEFAULT_STORY, (message) => this.log(prompt.promptId, "modal", message));
         const payload = {
             runId,
@@ -155,7 +155,7 @@ export class Orchestrator {
         let lastStage = initialStage;
         while (true) {
             const elapsed = Date.now() - startTime;
-            if (elapsed > OVERMIND_ORCHESTRATOR_TIMEOUT_MS) {
+            if (elapsed > OVERMIND_ORCHESTRATOR_TIMEOUT_MS()) {
                 await this.cancelRunSafely(promptId, runId, client);
                 throw new Error("Orchestrator run timed out");
             }
@@ -177,7 +177,7 @@ export class Orchestrator {
                     ?? `Run ${status.status}`;
                 throw new Error(errorDetail);
             }
-            await sleep(OVERMIND_ORCHESTRATOR_POLL_MS);
+            await sleep(OVERMIND_ORCHESTRATOR_POLL_MS());
         }
     }
     /**
@@ -187,7 +187,7 @@ export class Orchestrator {
      * Invariants: Returned maps contain normalized paths only.
      */
     filterAllowedFiles(promptId, files, evaluation) {
-        const isAllowedPath = buildAllowedPathChecker(evaluation, OVERMIND_WRITE_ALLOWLIST);
+        const isAllowedPath = buildAllowedPathChecker(evaluation, OVERMIND_WRITE_ALLOWLIST());
         const allowed = {};
         const rejected = [];
         for (const fileEntry of files) {

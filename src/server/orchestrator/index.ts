@@ -220,7 +220,7 @@ export class Orchestrator {
      * Invariants: No remote calls occur when configuration is missing.
      */
     private ensureOrchestratorConfigured(): void {
-        if (!OVERMIND_ORCHESTRATOR_URL.trim()) {
+        if (!OVERMIND_ORCHESTRATOR_URL().trim()) {
             throw new Error("OVERMIND_ORCHESTRATOR_URL is not configured");
         }
     }
@@ -232,7 +232,7 @@ export class Orchestrator {
      * Invariants: Client uses the normalized base URL.
      */
     private createClient(promptId: string): ModalOrchestratorClient {
-        const normalizedUrl = OVERMIND_ORCHESTRATOR_URL
+        const normalizedUrl = OVERMIND_ORCHESTRATOR_URL()
             .replace(/\/+$/u, "")
             .replace(/\/runs$/u, "");
         const logFn = (message: string) =>
@@ -254,7 +254,7 @@ export class Orchestrator {
         const pack = packFiles(
             this.projectRoot,
             evaluation,
-            ALWAYS_SYNC_PATTERNS
+            ALWAYS_SYNC_PATTERNS()
         );
 
         const story = this.workspace.loadStory(
@@ -290,7 +290,7 @@ export class Orchestrator {
 
         while (true) {
             const elapsed = Date.now() - startTime;
-            if (elapsed > OVERMIND_ORCHESTRATOR_TIMEOUT_MS) {
+            if (elapsed > OVERMIND_ORCHESTRATOR_TIMEOUT_MS()) {
                 await this.cancelRunSafely(promptId, runId, client);
                 throw new Error("Orchestrator run timed out");
             }
@@ -317,7 +317,7 @@ export class Orchestrator {
                 throw new Error(errorDetail);
             }
 
-            await sleep(OVERMIND_ORCHESTRATOR_POLL_MS);
+            await sleep(OVERMIND_ORCHESTRATOR_POLL_MS());
         }
     }
 
@@ -334,7 +334,7 @@ export class Orchestrator {
     ): { allowed: Record<string, string>; rejected: string[] } {
         const isAllowedPath = buildAllowedPathChecker(
             evaluation,
-            OVERMIND_WRITE_ALLOWLIST
+            OVERMIND_WRITE_ALLOWLIST()
         );
         const allowed: Record<string, string> = {};
         const rejected: string[] = [];

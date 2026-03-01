@@ -94,7 +94,7 @@ function isLocalMode(): boolean {
  * Does not validate the URL.
  */
 function isRemoteOrchestratorEnabled(): boolean {
-    return OVERMIND_ORCHESTRATOR_URL.trim().length > 0;
+    return OVERMIND_ORCHESTRATOR_URL().trim().length > 0;
 }
 
 /**
@@ -102,7 +102,7 @@ function isRemoteOrchestratorEnabled(): boolean {
  * Does not perform network calls.
  */
 function buildRemoteOrchestratorHealthUrl(): string {
-    const trimmed = OVERMIND_ORCHESTRATOR_URL.replace(/\/+$/u, "");
+    const trimmed = OVERMIND_ORCHESTRATOR_URL().replace(/\/+$/u, "");
     const runSuffix = "/runs";
     const executeSuffix = "/execute";
     if (trimmed.endsWith(runSuffix)) {
@@ -202,7 +202,7 @@ function spawnBridgeProcess(): void {
 
     bridgeProcess = spawn(
         "python3",
-        ["-m", "uvicorn", "bridge:app", "--port", String(MODAL_BRIDGE_PORT)],
+        ["-m", "uvicorn", "bridge:app", "--port", String(MODAL_BRIDGE_PORT())],
         {
             cwd: "modal-bridge",
             env: { ...process.env },
@@ -228,7 +228,7 @@ function spawnBridgeProcess(): void {
  */
 async function checkBridgeHealth(): Promise<void> {
     try {
-        const res = await fetch(`${MODAL_BRIDGE_URL}/health`);
+        const res = await fetch(`${MODAL_BRIDGE_URL()}/health`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = (await res.json()) as { modal_connected?: boolean };
         setExecutionBackendAvailable(Boolean(data.modal_connected));

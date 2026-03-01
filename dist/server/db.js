@@ -1,13 +1,24 @@
 import pg from "pg";
-const DATABASE_URL = process.env.OVERMIND_DATABASE_URL ??
-    "postgresql://postgres.dexwwtjcldhsrxsestyt:Bitqaf-jeqhyp-8xajnu@aws-1-us-east-2.pooler.supabase.com:5432/postgres";
-export const pool = new pg.Pool({
-    connectionString: DATABASE_URL,
-    ssl: { rejectUnauthorized: false },
+let _pool = null;
+export function getPool() {
+    if (!_pool) {
+        const url = process.env.OVERMIND_DATABASE_URL ?? "";
+        _pool = new pg.Pool({
+            connectionString: url,
+            ssl: { rejectUnauthorized: false },
+        });
+    }
+    return _pool;
+}
+/** Backwards-compatible export — lazily creates the pool on first access. */
+export const pool = new Proxy({}, {
+    get(_target, prop, receiver) {
+        return Reflect.get(getPool(), prop, receiver);
+    },
 });
 export async function initDb() {
     try {
-        await pool.query(`
+        await getPool().query(`
             CREATE TABLE IF NOT EXISTS features (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 title TEXT NOT NULL,
@@ -16,7 +27,7 @@ export async function initDb() {
                 project_id TEXT
             );
         `);
-        await pool.query(`
+        await getPool().query(`
             CREATE TABLE IF NOT EXISTS queries (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 content TEXT NOT NULL,
