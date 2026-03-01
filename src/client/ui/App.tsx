@@ -251,13 +251,29 @@ function reducer(state: AppState, action: Action): AppState {
 
         case "EXECUTION_COMPLETE": {
             if (state.execution?.promptId !== action.promptId) return state;
-            const fileList = action.files.length > 0
-                ? action.files.map(f => `  ${f.path} (+${f.linesAdded}/-${f.linesRemoved})`).join("\n")
-                : "  (no files changed)";
-            const completeMsg = `${action.summary}\n${fileList}`;
+            const hasFiles = action.files.length > 0;
+            const hitMaxRounds = action.summary.includes("max rounds reached");
+
+            let status: OutputStatus;
+            let completeMsg: string;
+
+            if (hasFiles) {
+                const fileList = action.files
+                    .map(f => `  ${f.path} (+${f.linesAdded}/-${f.linesRemoved})`)
+                    .join("\n");
+                completeMsg = `${action.summary}\n${fileList}`;
+                status = "complete";
+            } else if (hitMaxRounds) {
+                completeMsg = `Execution failed: agent exhausted all rounds without producing changes.`;
+                status = "error";
+            } else {
+                completeMsg = `${action.summary}\n  No files were changed.`;
+                status = "complete";
+            }
+
             return {
                 ...state,
-                outputs: addOutput(state.outputs, action.promptId, "complete", completeMsg),
+                outputs: addOutput(state.outputs, action.promptId, status, completeMsg),
                 execution: null,
                 currentPromptId: null,
             };
