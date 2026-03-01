@@ -492,7 +492,7 @@ async def create_run(req: RunCreateRequest) -> RunCreateResponse:
     )
     await write_run_record(req.runId, record)
 
-    run_worker.spawn(req.runId, req)
+    await run_worker.spawn.aio(req.runId, req)
     return RunCreateResponse(runId=req.runId)
 
 
