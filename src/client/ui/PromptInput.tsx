@@ -55,7 +55,9 @@ export default function PromptInput({
     const handleSubmit = useCallback(
         (input: string) => {
             const trimmed = input.trim();
-            if (!trimmed || disabled) return;
+            if (!trimmed) return;
+            // Allow ! shell commands even when disabled
+            if (disabled && !trimmed.startsWith("!")) return;
 
             const promptId = nanoid(12);
             onSubmit(promptId, trimmed);
@@ -71,25 +73,21 @@ export default function PromptInput({
         [disabled, onSubmit, onIdle, clearIdleTimer]
     );
 
-    if (disabled) {
-        return (
-            <Box paddingX={1}>
-                <Text color="gray">{">"} </Text>
-                <Text dimColor>Waiting for current prompt to complete...</Text>
-            </Box>
-        );
-    }
+    const promptColor = disabled ? "yellow" : "green";
+    const placeholder = disabled
+        ? "Executing... (! for shell commands)"
+        : "Type a prompt... (! for shell commands)";
 
     return (
         <Box paddingX={1}>
-            <Text color="green" bold>
+            <Text color={promptColor} bold>
                 {">"}{" "}
             </Text>
             <TextInput
                 value={value}
                 onChange={handleChange}
                 onSubmit={handleSubmit}
-                placeholder="Type a prompt..."
+                placeholder={placeholder}
             />
         </Box>
     );

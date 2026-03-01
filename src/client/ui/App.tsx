@@ -83,7 +83,8 @@ type Action =
     | { type: "MEMBER_EXECUTION_UPDATE"; username: string; promptId: string; stage: string }
     | { type: "MEMBER_EXECUTION_COMPLETE"; username: string; promptId: string; files: FileChange[]; summary: string }
     | { type: "SYSTEM_STATUS"; executionBackendAvailable: boolean }
-    | { type: "SET_VIEWING"; username: string | null };
+    | { type: "SET_VIEWING"; username: string | null }
+    | { type: "SHELL_OUTPUT"; output: string; command: string };
 
 function addOutput(
     outputs: OutputEntry[],
@@ -248,19 +249,19 @@ function reducer(state: AppState, action: Action): AppState {
                 execution: { ...state.execution, stage: action.stage },
             };
 
-        case "EXECUTION_COMPLETE":
+        case "EXECUTION_COMPLETE": {
             if (state.execution?.promptId !== action.promptId) return state;
+            const fileList = action.files.length > 0
+                ? action.files.map(f => `  ${f.path} (+${f.linesAdded}/-${f.linesRemoved})`).join("\n")
+                : "  (no files changed)";
+            const completeMsg = `${action.summary}\n${fileList}`;
             return {
                 ...state,
-                execution: {
-                    ...state.execution,
-                    files: action.files,
-                    summary: action.summary,
-                    completed: true,
-                    stage: null,
-                },
+                outputs: addOutput(state.outputs, action.promptId, "complete", completeMsg),
+                execution: null,
                 currentPromptId: null,
             };
+        }
 
         case "MEMBER_EXECUTION_UPDATE":
             return {
@@ -323,6 +324,12 @@ function reducer(state: AppState, action: Action): AppState {
 
         case "SET_VIEWING":
             return { ...state, viewingMember: action.username };
+
+        case "SHELL_OUTPUT":
+            return {
+                ...state,
+                outputs: addOutput(state.outputs, `shell-${Date.now()}`, "complete", `$ ${action.command}\n${action.output}`),
+            };
 
         default:
             return state;
@@ -518,6 +525,26 @@ export default function App({ connection, session, inviteCode }: AppProps): Reac
     const handlePromptSubmit = useCallback(
         (promptId: string, content: string) => {
             if (!content.trim()) return;
+
+            if (content.startsWith("!")) {
+                const cmd = content.slice(1).trim();
+                if (!cmd) return;
+                import("node:child_process").then(({ execSync }) => {
+                    try {
+                        const output = execSync(cmd, {
+                            encoding: "utf-8",
+                            timeout: 10000,
+                            cwd: process.cwd(),
+                        }).trim();
+                        dispatch({ type: "SHELL_OUTPUT", output: output || "(no output)", command: cmd });
+                    } catch (err: unknown) {
+                        const msg = err instanceof Error ? err.message : String(err);
+                        dispatch({ type: "SHELL_OUTPUT", output: `Error: ${msg}`, command: cmd });
+                    }
+                });
+                return;
+            }
+
             if (state.currentPromptId) return;
 
             dispatch({ type: "LOCAL_PROMPT_SUBMITTED", promptId, content });

@@ -80,10 +80,10 @@ export default function OutputView({
     const { stdout } = useStdout();
     const height = stdout?.rows ?? 30;
 
-    // Only show outputs for the current prompt
+    // Show outputs for current prompt, or recent outputs when idle
     const filtered = currentPromptId
         ? outputs.filter((o) => o.promptId === currentPromptId)
-        : [];
+        : outputs;
 
     // Show last N entries based on available space
     const maxItems = Math.min(MAX_VISIBLE, Math.max(height - 10, 3));
