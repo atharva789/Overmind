@@ -705,6 +705,27 @@ export function startServer(): WebSocketServer {
                 // 2-second UI delay to let the user see their prompt
                 await sleep(2000);
 
+                // Handle rejected (off-topic) queries — send redlit and skip execution
+                if (featureResult?.type === "rejected") {
+                    party.sendTo(connectionId, {
+                        type: "prompt-redlit",
+                        payload: {
+                            promptId: entry.promptId,
+                            reasoning: featureResult.reason ?? "Query is off-topic for this project.",
+                            conflicts: [],
+                        },
+                    });
+                    party.broadcast({
+                        type: "activity",
+                        payload: {
+                            username: entry.username,
+                            event: `'s prompt was rejected ✗`,
+                            timestamp: Date.now(),
+                        },
+                    });
+                    return;
+                }
+
                 if (featureResult?.type === "new_feature") {
                     party.sendTo(connectionId, {
                         type: "feature-created",

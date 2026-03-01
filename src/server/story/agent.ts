@@ -10,12 +10,12 @@ const ACTIVE_FEATURES_LIMIT = 15;
 // Define the structured JSON schema for Gemini to evaluate a new query
 const assignmentSchema = {
     type: Type.OBJECT,
-    description: "Determine whether the new query belongs to an existing feature from the list, or requires a new feature to be created.",
+    description: "Determine whether the new query should be rejected, assigned to an existing feature, or used to create a new feature.",
     properties: {
         action: {
             type: Type.STRING,
-            enum: ["assign_existing", "create_new"],
-            description: "Choose 'assign_existing' if the query clearly belongs to one of the provided features. Choose 'create_new' if the query represents a fundamentally new feature or direction."
+            enum: ["assign_existing", "create_new", "reject"],
+            description: "Choose 'reject' if the query is completely unrelated to the project's domain. Choose 'create_new' if the query is relevant but distinct from existing features (PREFER this over assign_existing). Choose 'assign_existing' ONLY if the query is nearly identical to an existing feature's scope."
         },
         feature_id: {
             type: Type.STRING,
@@ -28,6 +28,10 @@ const assignmentSchema = {
         description: {
             type: Type.STRING,
             description: "If action is 'create_new', provide a paragraph explaining the new feature."
+        },
+        rejection_reason: {
+            type: Type.STRING,
+            description: "If action is 'reject', explain why the query is off-topic for this project."
         }
     },
     required: ["action"]
@@ -45,7 +49,7 @@ export async function checkAndRunStoryAgent(projectRoot: string) {
     const projectId = deriveProjectId(projectRoot);
 
     try {
-        const results: { queryId: string; type: "new_feature" | "existing"; title?: string }[] = [];
+        const results: { queryId: string; type: "new_feature" | "existing" | "rejected"; title?: string; reason?: string }[] = [];
 
         // Continuous State: Semantically cluster each unclustered query
         const { rows: unclustered } = await pool.query(
@@ -128,9 +132,13 @@ async function evaluateAndClusterQuery(ai: GoogleGenAI, model: string, projectRo
 
     const featuresList = features.map(f => `Feature ID: ${f.id} | Title: ${f.title}\nDescription: ${f.description}`).join("\n\n");
 
-    const prompt = `You are the Story Agent for project "${projectId}". Your task is to analyze a new user query and determine if it belongs to an existing feature.
+    const prompt = `You are the Story Agent for project "${projectId}". Your task is to analyze a new user query and make a three-way decision:
 
-IMPORTANT: Only choose "assign_existing" if the query is CLEARLY and DIRECTLY about the same topic as an existing feature. Superficial keyword overlap is NOT enough. If the query is about a different domain, technology, or problem area, you MUST choose "create_new".
+1. **reject** — The query is completely unrelated to this project's domain. It has nothing to do with the codebase, its purpose, or any reasonable extension of it. Examples: asking about cooking recipes in a software project, asking about sports scores in a finance app.
+
+2. **create_new** — The query is relevant to the project but distinct from all existing features. PREFER THIS. When in doubt between assign_existing and create_new, ALWAYS choose create_new. New directions, new ideas, and new angles should get their own feature.
+
+3. **assign_existing** — The query is essentially a continuation of the exact same work as an existing feature. Only use this when the query is nearly identical in scope to an existing feature — not just loosely related.
 
 Active Features:
 ${features.length > 0 ? featuresList : "No features exist yet."}
@@ -174,11 +182,16 @@ Prompt: ${query.content}
         return;
     }
 
-    let result: { type: "new_feature" | "existing"; title?: string } | undefined;
+    let result: { type: "new_feature" | "existing" | "rejected"; title?: string; reason?: string } | undefined;
 
     const client = await pool.connect();
     try {
-        if (decision.action === "assign_existing" && decision.feature_id) {
+        if (decision.action === "reject") {
+            await client.query("DELETE FROM queries WHERE id = $1", [query.id]);
+            console.log(`[story-agent] Rejected off-topic query ${query.id}: ${decision.rejection_reason}`);
+            result = { type: "rejected", reason: decision.rejection_reason };
+        }
+        else if (decision.action === "assign_existing" && decision.feature_id) {
             // Verify feature actually exists just in case hallucination
             const check = await client.query("SELECT id FROM features WHERE id = $1", [decision.feature_id]);
             if (check.rows.length > 0) {
@@ -208,8 +221,10 @@ Prompt: ${query.content}
         client.release();
     }
 
-    // Now regenerate story.md
-    await regenerateStoryMarkdown(projectRoot, projectId);
+    // Regenerate story.md (skip for rejections — no feature was touched)
+    if (result?.type !== "rejected") {
+        await regenerateStoryMarkdown(projectRoot, projectId);
+    }
 
     return result;
 }
