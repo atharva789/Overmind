@@ -60,10 +60,13 @@ export async function checkAndRunStoryAgent(projectRoot: string) {
         if (unclustered.length > 0) {
             console.log(`[story-agent] Processing ${unclustered.length} unclustered queries...`);
             for (const query of unclustered) {
-                const res = await evaluateAndClusterQuery(ai, model, projectRoot, projectId, query);
+                const res = await evaluateAndClusterQuery(ai, model, projectId, query);
                 if (res) results.push({ queryId: query.id, ...res });
             }
         }
+
+        // Always regenerate STORY.md after processing
+        await regenerateStoryMarkdown(projectRoot, projectId);
 
         return results;
     } catch (err) {
@@ -111,8 +114,8 @@ Output ONLY a valid markdown document with a H1 title, a short intro, and a sect
 
         const markdown = response.text;
         if (markdown) {
-            await writeFile(join(projectRoot, "story.md"), markdown.trim(), "utf8");
-            console.log("[story-agent] Wrote initial story.md");
+            await writeFile(join(projectRoot, "STORY.md"), markdown.trim(), "utf8");
+            console.log("[story-agent] Wrote initial STORY.md");
         }
     } catch (err: any) {
         if (err?.status === 429) {
@@ -123,7 +126,7 @@ Output ONLY a valid markdown document with a H1 title, a short intro, and a sect
     }
 }
 
-async function evaluateAndClusterQuery(ai: GoogleGenAI, model: string, projectRoot: string, projectId: string, query: { id: string, username: string, content: string }) {
+async function evaluateAndClusterQuery(ai: GoogleGenAI, model: string, projectId: string, query: { id: string, username: string, content: string }) {
     // Fetch the most recent active features for this project to provide as context
     const { rows: features } = await pool.query(
         "SELECT id, title, description FROM features WHERE project_id = $1 ORDER BY created_at DESC LIMIT $2",
@@ -221,16 +224,11 @@ Prompt: ${query.content}
         client.release();
     }
 
-    // Regenerate story.md (skip for rejections — no feature was touched)
-    if (result?.type !== "rejected") {
-        await regenerateStoryMarkdown(projectRoot, projectId);
-    }
-
     return result;
 }
 
 export async function regenerateStoryMarkdown(projectRoot: string, projectId: string) {
-    console.log(`[story-agent] Regenerating story.md for '${projectId}'...`);
+    console.log(`[story-agent] Regenerating STORY.md for '${projectId}'...`);
 
     // Fetch all features, oldest first
     const { rows: features } = await pool.query(
@@ -266,6 +264,6 @@ export async function regenerateStoryMarkdown(projectRoot: string, projectId: st
         }
     }
 
-    await writeFile(join(projectRoot, "story.md"), md.trim(), "utf8");
-    console.log("[story-agent] story.md updated.");
+    await writeFile(join(projectRoot, "STORY.md"), md.trim(), "utf8");
+    console.log("[story-agent] STORY.md updated.");
 }

@@ -70,11 +70,17 @@ const StatusUpdateMessage = z.object({
     }),
 });
 
+const MergeRequestMessage = z.object({
+    type: z.literal("merge-request"),
+    payload: z.object({}),
+});
+
 export const ClientMessageSchema = z.discriminatedUnion("type", [
     JoinMessage,
     PromptSubmitMessage,
     HostVerdictMessage,
     StatusUpdateMessage,
+    MergeRequestMessage,
 ]);
 
 export type ClientMessage = z.infer<typeof ClientMessageSchema>;
@@ -249,7 +255,30 @@ const MemberExecutionCompleteMessage = z.object({
     }),
 });
 
+const MergeUpdateMessage = z.object({
+    type: z.literal("merge-update"),
+    payload: z.object({
+        stage: z.string(),
+    }),
+});
 
+const MergeCompleteMessage = z.object({
+    type: z.literal("merge-complete"),
+    payload: z.object({
+        filesResolved: z.number(),
+        prUrl: z.string().optional(),
+        hasLowConfidence: z.boolean(),
+        branchName: z.string(),
+        summary: z.string(),
+    }),
+});
+
+const MergeErrorMessage = z.object({
+    type: z.literal("merge-error"),
+    payload: z.object({
+        message: z.string(),
+    }),
+});
 
 export const ServerMessageSchema = z.discriminatedUnion("type", [
     JoinAckMessage,
@@ -272,6 +301,9 @@ export const ServerMessageSchema = z.discriminatedUnion("type", [
     SandboxStatusMessage,
     MemberExecutionUpdateMessage,
     MemberExecutionCompleteMessage,
+    MergeUpdateMessage,
+    MergeCompleteMessage,
+    MergeErrorMessage,
 ]);
 
 export type ServerMessage = z.infer<typeof ServerMessageSchema>;

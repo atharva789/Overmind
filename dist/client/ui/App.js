@@ -25,6 +25,8 @@ const initialState = {
     executionBackendAvailable: true,
     errorMessage: null,
     partyEnded: false,
+    mergeInProgress: false,
+    mergeStage: null,
 };
 function addOutput(outputs, promptId, status, message, promptContent) {
     return [
@@ -154,20 +156,35 @@ function reducer(state, action) {
                 ...state,
                 execution: { ...state.execution, stage: action.stage },
             };
-        case "EXECUTION_COMPLETE":
+        case "EXECUTION_COMPLETE": {
             if (state.execution?.promptId !== action.promptId)
                 return state;
+            const hasFiles = action.files.length > 0;
+            const hitMaxRounds = action.summary.includes("max rounds reached");
+            let status;
+            let completeMsg;
+            if (hasFiles) {
+                const fileList = action.files
+                    .map(f => `  ${f.path} (+${f.linesAdded}/-${f.linesRemoved})`)
+                    .join("\n");
+                completeMsg = `${action.summary}\n${fileList}`;
+                status = "complete";
+            }
+            else if (hitMaxRounds) {
+                completeMsg = `Execution failed: agent exhausted all rounds without producing changes.`;
+                status = "error";
+            }
+            else {
+                completeMsg = `${action.summary}\n  No files were changed.`;
+                status = "complete";
+            }
             return {
                 ...state,
-                execution: {
-                    ...state.execution,
-                    files: action.files,
-                    summary: action.summary,
-                    completed: true,
-                    stage: null,
-                },
+                outputs: addOutput(state.outputs, action.promptId, status, completeMsg),
+                execution: null,
                 currentPromptId: null,
             };
+        }
         case "MEMBER_EXECUTION_UPDATE":
             return {
                 ...state,
@@ -224,6 +241,33 @@ function reducer(state, action) {
             return { ...state, errorMessage: action.message };
         case "SET_VIEWING":
             return { ...state, viewingMember: action.username };
+        case "SHELL_OUTPUT":
+            return {
+                ...state,
+                outputs: addOutput(state.outputs, `shell-${Date.now()}`, "complete", `$ ${action.command}\n${action.output}`),
+            };
+        case "MERGE_UPDATE":
+            return {
+                ...state,
+                mergeInProgress: true,
+                mergeStage: action.stage,
+            };
+        case "MERGE_COMPLETE": {
+            const mergeMsg = `Merge complete: ${action.filesResolved} file(s) resolved on branch ${action.branchName}${action.prUrl ? `\nPR: ${action.prUrl}` : ""}${action.hasLowConfidence ? "\n⚠ Some resolutions have low confidence" : ""}`;
+            return {
+                ...state,
+                mergeInProgress: false,
+                mergeStage: null,
+                outputs: addOutput(state.outputs, `merge-${Date.now()}`, "complete", mergeMsg),
+            };
+        }
+        case "MERGE_ERROR":
+            return {
+                ...state,
+                mergeInProgress: false,
+                mergeStage: null,
+                outputs: addOutput(state.outputs, `merge-${Date.now()}`, "error", `Merge failed: ${action.message}`),
+            };
         default:
             return state;
     }
@@ -390,6 +434,22 @@ export default function App({ connection, session, inviteCode }) {
                 case "error":
                     dispatch({ type: "ERROR", message: msg.payload.message, code: msg.payload.code });
                     break;
+                case "merge-update":
+                    dispatch({ type: "MERGE_UPDATE", stage: msg.payload.stage });
+                    break;
+                case "merge-complete":
+                    dispatch({
+                        type: "MERGE_COMPLETE",
+                        filesResolved: msg.payload.filesResolved,
+                        prUrl: msg.payload.prUrl,
+                        hasLowConfidence: msg.payload.hasLowConfidence,
+                        branchName: msg.payload.branchName,
+                        summary: msg.payload.summary,
+                    });
+                    break;
+                case "merge-error":
+                    dispatch({ type: "MERGE_ERROR", message: msg.payload.message });
+                    break;
             }
         };
         connection.onMessage(handler);
@@ -400,11 +460,74 @@ export default function App({ connection, session, inviteCode }) {
     const handlePromptSubmit = useCallback((promptId, content) => {
         if (!content.trim())
             return;
+        // Slash commands
+        if (content.startsWith("/")) {
+            const cmd = content.slice(1).trim().toLowerCase();
+            if (cmd === "invite") {
+                const code = inviteCode ?? state.partyCode;
+                if (code) {
+                    import("node:child_process").then(({ execSync }) => {
+                        try {
+                            execSync(`printf '%s' ${JSON.stringify(code)} | pbcopy`);
+                            dispatch({ type: "SHELL_OUTPUT", output: `Invite code copied: ${code}`, command: "/invite" });
+                        }
+                        catch {
+                            dispatch({ type: "SHELL_OUTPUT", output: `Invite code: ${code} (clipboard copy failed)`, command: "/invite" });
+                        }
+                    });
+                }
+                else {
+                    dispatch({ type: "SHELL_OUTPUT", output: "No invite code available.", command: "/invite" });
+                }
+                return;
+            }
+            if (cmd === "leave") {
+                connection.disconnect();
+                exit();
+                return;
+            }
+            if (cmd === "merge") {
+                if (!state.isHost) {
+                    dispatch({ type: "SHELL_OUTPUT", output: "Only the host can run /merge.", command: "/merge" });
+                    return;
+                }
+                if (state.mergeInProgress) {
+                    dispatch({ type: "SHELL_OUTPUT", output: "Merge already in progress.", command: "/merge" });
+                    return;
+                }
+                connection.send({ type: "merge-request", payload: {} });
+                dispatch({ type: "MERGE_UPDATE", stage: "Starting merge..." });
+                return;
+            }
+            dispatch({ type: "SHELL_OUTPUT", output: `Unknown command: /${cmd}\nAvailable: /invite, /leave, /merge`, command: `/${cmd}` });
+            return;
+        }
+        // Shell commands
+        if (content.startsWith("!")) {
+            const cmd = content.slice(1).trim();
+            if (!cmd)
+                return;
+            import("node:child_process").then(({ execSync }) => {
+                try {
+                    const output = execSync(cmd, {
+                        encoding: "utf-8",
+                        timeout: 10000,
+                        cwd: process.cwd(),
+                    }).trim();
+                    dispatch({ type: "SHELL_OUTPUT", output: output || "(no output)", command: cmd });
+                }
+                catch (err) {
+                    const msg = err instanceof Error ? err.message : String(err);
+                    dispatch({ type: "SHELL_OUTPUT", output: `Error: ${msg}`, command: cmd });
+                }
+            });
+            return;
+        }
         if (state.currentPromptId)
             return;
         dispatch({ type: "LOCAL_PROMPT_SUBMITTED", promptId, content });
         session.submitPrompt(promptId, content);
-    }, [session, state.currentPromptId]);
+    }, [session, state.currentPromptId, inviteCode, state.partyCode, connection, exit]);
     const handleTyping = useCallback(() => {
         session.sendStatusUpdate("typing");
     }, [session]);
@@ -439,6 +562,10 @@ export default function App({ connection, session, inviteCode }) {
         if (state.viewingMember) {
             const exec = state.memberExecutions[state.viewingMember];
             return (_jsxs(Box, { flexDirection: "column", flexGrow: 1, borderStyle: "single", borderColor: "magenta", children: [_jsx(Box, { paddingX: 1, borderBottom: true, borderColor: "magenta", children: _jsxs(Text, { bold: true, color: "magenta", children: ["\uD83D\uDC40 Viewing ", state.viewingMember, "'s Screen (Ctrl+your index to exit)"] }) }), _jsx(Box, { flexDirection: "column", flexGrow: 1, children: exec ? (_jsx(ExecutionView, { execution: exec })) : (_jsx(Box, { flexDirection: "column", flexGrow: 1, justifyContent: "center", alignItems: "center", children: _jsxs(Text, { dimColor: true, children: [state.viewingMember, " is not currently executing a prompt."] }) })) })] }));
+        }
+        // Show merge progress
+        if (state.mergeInProgress && state.mergeStage) {
+            return (_jsxs(Box, { flexDirection: "column", flexGrow: 1, justifyContent: "center", alignItems: "center", children: [_jsx(Text, { bold: true, color: "cyan", children: "Merge in progress..." }), _jsx(Text, { dimColor: true, children: state.mergeStage })] }));
         }
         // Show ExecutionView for submitter during execution
         if (state.execution && !state.execution.completed) {

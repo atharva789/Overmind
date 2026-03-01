@@ -48,7 +48,7 @@ function log(msg: string): void {
 async function readStoryMd(projectRoot: string): Promise<string> {
     try {
         return await readFile(
-            join(projectRoot, "story.md"),
+            join(projectRoot, "STORY.md"),
             "utf-8"
         );
     } catch {

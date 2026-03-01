@@ -35,6 +35,8 @@ interface AppState {
     executionBackendAvailable: boolean;
     errorMessage: string | null;
     partyEnded: boolean;
+    mergeInProgress: boolean;
+    mergeStage: string | null;
 }
 
 const initialState: AppState = {
@@ -54,6 +56,8 @@ const initialState: AppState = {
     executionBackendAvailable: true,
     errorMessage: null,
     partyEnded: false,
+    mergeInProgress: false,
+    mergeStage: null,
 };
 
 // ─── Actions ───
@@ -84,7 +88,10 @@ type Action =
     | { type: "MEMBER_EXECUTION_COMPLETE"; username: string; promptId: string; files: FileChange[]; summary: string }
     | { type: "SYSTEM_STATUS"; executionBackendAvailable: boolean }
     | { type: "SET_VIEWING"; username: string | null }
-    | { type: "SHELL_OUTPUT"; output: string; command: string };
+    | { type: "SHELL_OUTPUT"; output: string; command: string }
+    | { type: "MERGE_UPDATE"; stage: string }
+    | { type: "MERGE_COMPLETE"; filesResolved: number; prUrl?: string; hasLowConfidence: boolean; branchName: string; summary: string }
+    | { type: "MERGE_ERROR"; message: string };
 
 function addOutput(
     outputs: OutputEntry[],
@@ -347,6 +354,31 @@ function reducer(state: AppState, action: Action): AppState {
                 outputs: addOutput(state.outputs, `shell-${Date.now()}`, "complete", `$ ${action.command}\n${action.output}`),
             };
 
+        case "MERGE_UPDATE":
+            return {
+                ...state,
+                mergeInProgress: true,
+                mergeStage: action.stage,
+            };
+
+        case "MERGE_COMPLETE": {
+            const mergeMsg = `Merge complete: ${action.filesResolved} file(s) resolved on branch ${action.branchName}${action.prUrl ? `\nPR: ${action.prUrl}` : ""}${action.hasLowConfidence ? "\n⚠ Some resolutions have low confidence" : ""}`;
+            return {
+                ...state,
+                mergeInProgress: false,
+                mergeStage: null,
+                outputs: addOutput(state.outputs, `merge-${Date.now()}`, "complete", mergeMsg),
+            };
+        }
+
+        case "MERGE_ERROR":
+            return {
+                ...state,
+                mergeInProgress: false,
+                mergeStage: null,
+                outputs: addOutput(state.outputs, `merge-${Date.now()}`, "error", `Merge failed: ${action.message}`),
+            };
+
         default:
             return state;
     }
@@ -529,6 +561,22 @@ export default function App({ connection, session, inviteCode }: AppProps): Reac
                 case "error":
                     dispatch({ type: "ERROR", message: msg.payload.message, code: msg.payload.code });
                     break;
+                case "merge-update":
+                    dispatch({ type: "MERGE_UPDATE", stage: msg.payload.stage });
+                    break;
+                case "merge-complete":
+                    dispatch({
+                        type: "MERGE_COMPLETE",
+                        filesResolved: msg.payload.filesResolved,
+                        prUrl: msg.payload.prUrl,
+                        hasLowConfidence: msg.payload.hasLowConfidence,
+                        branchName: msg.payload.branchName,
+                        summary: msg.payload.summary,
+                    });
+                    break;
+                case "merge-error":
+                    dispatch({ type: "MERGE_ERROR", message: msg.payload.message });
+                    break;
             }
         };
 
@@ -542,6 +590,48 @@ export default function App({ connection, session, inviteCode }: AppProps): Reac
         (promptId: string, content: string) => {
             if (!content.trim()) return;
 
+            // Slash commands
+            if (content.startsWith("/")) {
+                const cmd = content.slice(1).trim().toLowerCase();
+                if (cmd === "invite") {
+                    const code = inviteCode ?? state.partyCode;
+                    if (code) {
+                        import("node:child_process").then(({ execSync }) => {
+                            try {
+                                execSync(`printf '%s' ${JSON.stringify(code)} | pbcopy`);
+                                dispatch({ type: "SHELL_OUTPUT", output: `Invite code copied: ${code}`, command: "/invite" });
+                            } catch {
+                                dispatch({ type: "SHELL_OUTPUT", output: `Invite code: ${code} (clipboard copy failed)`, command: "/invite" });
+                            }
+                        });
+                    } else {
+                        dispatch({ type: "SHELL_OUTPUT", output: "No invite code available.", command: "/invite" });
+                    }
+                    return;
+                }
+                if (cmd === "leave") {
+                    connection.disconnect();
+                    exit();
+                    return;
+                }
+                if (cmd === "merge") {
+                    if (!state.isHost) {
+                        dispatch({ type: "SHELL_OUTPUT", output: "Only the host can run /merge.", command: "/merge" });
+                        return;
+                    }
+                    if (state.mergeInProgress) {
+                        dispatch({ type: "SHELL_OUTPUT", output: "Merge already in progress.", command: "/merge" });
+                        return;
+                    }
+                    connection.send({ type: "merge-request", payload: {} });
+                    dispatch({ type: "MERGE_UPDATE", stage: "Starting merge..." });
+                    return;
+                }
+                dispatch({ type: "SHELL_OUTPUT", output: `Unknown command: /${cmd}\nAvailable: /invite, /leave, /merge`, command: `/${cmd}` });
+                return;
+            }
+
+            // Shell commands
             if (content.startsWith("!")) {
                 const cmd = content.slice(1).trim();
                 if (!cmd) return;
@@ -566,7 +656,7 @@ export default function App({ connection, session, inviteCode }: AppProps): Reac
             dispatch({ type: "LOCAL_PROMPT_SUBMITTED", promptId, content });
             session.submitPrompt(promptId, content);
         },
-        [session, state.currentPromptId]
+        [session, state.currentPromptId, inviteCode, state.partyCode, connection, exit]
     );
 
     const handleTyping = useCallback(() => {
@@ -633,6 +723,16 @@ export default function App({ connection, session, inviteCode }: AppProps): Reac
                             </Box>
                         )}
                     </Box>
+                </Box>
+            );
+        }
+
+        // Show merge progress
+        if (state.mergeInProgress && state.mergeStage) {
+            return (
+                <Box flexDirection="column" flexGrow={1} justifyContent="center" alignItems="center">
+                    <Text bold color="cyan">Merge in progress...</Text>
+                    <Text dimColor>{state.mergeStage}</Text>
                 </Box>
             );
         }

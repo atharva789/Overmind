@@ -30,6 +30,7 @@ import type { EvaluationResult } from "../shared/protocol.js";
 import { Orchestrator, type ExecutionEvent } from "./orchestrator/index.js";
 import { initDb, pool } from "./db.js";
 import { checkAndRunStoryAgent } from "./story/agent.js";
+import { solveMergeConflicts } from "./merge/index.js";
 
 const generateConnectionId = customAlphabet(
     "abcdefghijklmnopqrstuvwxyz0123456789",
@@ -589,6 +590,73 @@ export function startServer(): WebSocketServer {
 
                     pendingEvaluations.delete(promptId);
                 }
+                break;
+            }
+
+            case "merge-request": {
+                if (!party.isHost(connectionId)) {
+                    party.sendTo(connectionId, {
+                        type: "error",
+                        payload: {
+                            message: "Only host can trigger merge",
+                            code: ErrorCode.INVALID_MESSAGE,
+                        },
+                    });
+                    return;
+                }
+
+                const projectRoot = process.env["OVERMIND_PROJECT_ROOT"] ?? process.cwd();
+                void (async () => {
+                    try {
+                        for await (const event of solveMergeConflicts(
+                            { conflictingFiles: [], storyMd: "", partyCode: party.code },
+                            projectRoot
+                        )) {
+                            switch (event.type) {
+                                case "stage":
+                                    party.sendTo(connectionId, {
+                                        type: "merge-update" as any,
+                                        payload: { stage: event.stage },
+                                    });
+                                    break;
+                                case "complete": {
+                                    const result = event.result!;
+                                    party.sendTo(connectionId, {
+                                        type: "merge-complete" as any,
+                                        payload: {
+                                            filesResolved: result.resolutions.length,
+                                            prUrl: result.prUrl,
+                                            hasLowConfidence: result.hasLowConfidence,
+                                            branchName: result.branchName,
+                                            summary: result.prDescription,
+                                        },
+                                    });
+                                    party.broadcast({
+                                        type: "activity",
+                                        payload: {
+                                            username: "system",
+                                            event: `Merge complete: ${result.resolutions.length} file(s) resolved${result.prUrl ? ` — PR: ${result.prUrl}` : ""}`,
+                                            timestamp: Date.now(),
+                                        },
+                                    });
+                                    break;
+                                }
+                                case "error":
+                                    party.sendTo(connectionId, {
+                                        type: "merge-error" as any,
+                                        payload: { message: event.message },
+                                    });
+                                    break;
+                            }
+                        }
+                    } catch (err) {
+                        const msg = err instanceof Error ? err.message : String(err);
+                        party.sendTo(connectionId, {
+                            type: "merge-error" as any,
+                            payload: { message: msg },
+                        });
+                    }
+                })();
                 break;
             }
 

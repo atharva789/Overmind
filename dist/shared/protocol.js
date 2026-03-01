@@ -55,11 +55,16 @@ const StatusUpdateMessage = z.object({
         status: z.enum(["typing", "idle"]),
     }),
 });
+const MergeRequestMessage = z.object({
+    type: z.literal("merge-request"),
+    payload: z.object({}),
+});
 export const ClientMessageSchema = z.discriminatedUnion("type", [
     JoinMessage,
     PromptSubmitMessage,
     HostVerdictMessage,
     StatusUpdateMessage,
+    MergeRequestMessage,
 ]);
 // ─── Server → Client Messages ───
 const JoinAckMessage = z.object({
@@ -210,6 +215,28 @@ const MemberExecutionCompleteMessage = z.object({
         summary: z.string(),
     }),
 });
+const MergeUpdateMessage = z.object({
+    type: z.literal("merge-update"),
+    payload: z.object({
+        stage: z.string(),
+    }),
+});
+const MergeCompleteMessage = z.object({
+    type: z.literal("merge-complete"),
+    payload: z.object({
+        filesResolved: z.number(),
+        prUrl: z.string().optional(),
+        hasLowConfidence: z.boolean(),
+        branchName: z.string(),
+        summary: z.string(),
+    }),
+});
+const MergeErrorMessage = z.object({
+    type: z.literal("merge-error"),
+    payload: z.object({
+        message: z.string(),
+    }),
+});
 export const ServerMessageSchema = z.discriminatedUnion("type", [
     JoinAckMessage,
     MemberJoinedMessage,
@@ -231,6 +258,9 @@ export const ServerMessageSchema = z.discriminatedUnion("type", [
     SandboxStatusMessage,
     MemberExecutionUpdateMessage,
     MemberExecutionCompleteMessage,
+    MergeUpdateMessage,
+    MergeCompleteMessage,
+    MergeErrorMessage,
 ]);
 // ─── Parsers (never throw, return null on invalid) ───
 export function parseClientMessage(data) {

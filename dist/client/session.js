@@ -116,6 +116,18 @@ export class Session {
                     console.log(`[system] ⚠ Execution backend unavailable`);
                 }
                 break;
+            case "merge-update":
+                console.log(`[merge] ${msg.payload.stage}`);
+                break;
+            case "merge-complete":
+                console.log(`[merge] Complete: ${msg.payload.filesResolved} file(s) resolved on ${msg.payload.branchName}`);
+                if (msg.payload.prUrl) {
+                    console.log(`[merge] PR: ${msg.payload.prUrl}`);
+                }
+                break;
+            case "merge-error":
+                console.error(`[merge] Error: ${msg.payload.message}`);
+                break;
         }
     }
     connect() {

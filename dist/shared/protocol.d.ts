@@ -168,6 +168,15 @@ export declare const ClientMessageSchema: z.ZodDiscriminatedUnion<"type", [z.Zod
     payload: {
         status: "typing" | "idle";
     };
+}>, z.ZodObject<{
+    type: z.ZodLiteral<"merge-request">;
+    payload: z.ZodObject<{}, "strip", z.ZodTypeAny, {}, {}>;
+}, "strip", z.ZodTypeAny, {
+    type: "merge-request";
+    payload: {};
+}, {
+    type: "merge-request";
+    payload: {};
 }>]>;
 export type ClientMessage = z.infer<typeof ClientMessageSchema>;
 export declare const ServerMessageSchema: z.ZodDiscriminatedUnion<"type", [z.ZodObject<{
@@ -759,6 +768,83 @@ export declare const ServerMessageSchema: z.ZodDiscriminatedUnion<"type", [z.Zod
             linesRemoved: number;
         }[];
         summary: string;
+    };
+}>, z.ZodObject<{
+    type: z.ZodLiteral<"merge-update">;
+    payload: z.ZodObject<{
+        stage: z.ZodString;
+    }, "strip", z.ZodTypeAny, {
+        stage: string;
+    }, {
+        stage: string;
+    }>;
+}, "strip", z.ZodTypeAny, {
+    type: "merge-update";
+    payload: {
+        stage: string;
+    };
+}, {
+    type: "merge-update";
+    payload: {
+        stage: string;
+    };
+}>, z.ZodObject<{
+    type: z.ZodLiteral<"merge-complete">;
+    payload: z.ZodObject<{
+        filesResolved: z.ZodNumber;
+        prUrl: z.ZodOptional<z.ZodString>;
+        hasLowConfidence: z.ZodBoolean;
+        branchName: z.ZodString;
+        summary: z.ZodString;
+    }, "strip", z.ZodTypeAny, {
+        summary: string;
+        filesResolved: number;
+        hasLowConfidence: boolean;
+        branchName: string;
+        prUrl?: string | undefined;
+    }, {
+        summary: string;
+        filesResolved: number;
+        hasLowConfidence: boolean;
+        branchName: string;
+        prUrl?: string | undefined;
+    }>;
+}, "strip", z.ZodTypeAny, {
+    type: "merge-complete";
+    payload: {
+        summary: string;
+        filesResolved: number;
+        hasLowConfidence: boolean;
+        branchName: string;
+        prUrl?: string | undefined;
+    };
+}, {
+    type: "merge-complete";
+    payload: {
+        summary: string;
+        filesResolved: number;
+        hasLowConfidence: boolean;
+        branchName: string;
+        prUrl?: string | undefined;
+    };
+}>, z.ZodObject<{
+    type: z.ZodLiteral<"merge-error">;
+    payload: z.ZodObject<{
+        message: z.ZodString;
+    }, "strip", z.ZodTypeAny, {
+        message: string;
+    }, {
+        message: string;
+    }>;
+}, "strip", z.ZodTypeAny, {
+    type: "merge-error";
+    payload: {
+        message: string;
+    };
+}, {
+    type: "merge-error";
+    payload: {
+        message: string;
     };
 }>]>;
 export type ServerMessage = z.infer<typeof ServerMessageSchema>;

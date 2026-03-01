@@ -33,7 +33,10 @@ export default function PromptInput({ disabled, onSubmit, onTyping, onIdle, }) {
     }, [onTyping, onIdle, clearIdleTimer]);
     const handleSubmit = useCallback((input) => {
         const trimmed = input.trim();
-        if (!trimmed || disabled)
+        if (!trimmed)
+            return;
+        // Allow ! shell and / slash commands even when disabled
+        if (disabled && !trimmed.startsWith("!") && !trimmed.startsWith("/"))
             return;
         const promptId = nanoid(12);
         onSubmit(promptId, trimmed);
@@ -45,9 +48,10 @@ export default function PromptInput({ disabled, onSubmit, onTyping, onIdle, }) {
             onIdle();
         }
     }, [disabled, onSubmit, onIdle, clearIdleTimer]);
-    if (disabled) {
-        return (_jsxs(Box, { paddingX: 1, children: [_jsxs(Text, { color: "gray", children: [">", " "] }), _jsx(Text, { dimColor: true, children: "Waiting for current prompt to complete..." })] }));
-    }
-    return (_jsxs(Box, { paddingX: 1, children: [_jsxs(Text, { color: "green", bold: true, children: [">", " "] }), _jsx(TextInput, { value: value, onChange: handleChange, onSubmit: handleSubmit, placeholder: "Type a prompt..." })] }));
+    const promptColor = disabled ? "yellow" : "green";
+    const placeholder = disabled
+        ? "Executing... (! for shell commands)"
+        : "Type a prompt... (! for shell commands)";
+    return (_jsxs(Box, { paddingX: 1, children: [_jsxs(Text, { color: promptColor, bold: true, children: [">", " "] }), _jsx(TextInput, { value: value, onChange: handleChange, onSubmit: handleSubmit, placeholder: placeholder })] }));
 }
 //# sourceMappingURL=PromptInput.js.map

@@ -56,8 +56,8 @@ export default function PromptInput({
         (input: string) => {
             const trimmed = input.trim();
             if (!trimmed) return;
-            // Allow ! shell commands even when disabled
-            if (disabled && !trimmed.startsWith("!")) return;
+            // Allow ! shell and / slash commands even when disabled
+            if (disabled && !trimmed.startsWith("!") && !trimmed.startsWith("/")) return;
 
             const promptId = nanoid(12);
             onSubmit(promptId, trimmed);
