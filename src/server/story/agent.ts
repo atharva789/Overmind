@@ -130,7 +130,7 @@ async function evaluateAndClusterQuery(ai: GoogleGenAI, model: string, projectRo
         [projectId, ACTIVE_FEATURES_LIMIT]
     ) as { rows: any[] };
 
-    const featuresList = features.map(f => `Feature ID: ${f.id} | Title: ${f.title}\nDescription: ${f.description}`).join("\n\n");
+    const featuresList = features.map((f: any) => `Feature ID: ${f.id} | Title: ${f.title}\nDescription: ${f.description}`).join("\n\n");
 
     const prompt = `You are the Story Agent for project "${projectId}". Your task is to analyze a new user query and make a three-way decision:
 
