@@ -112,9 +112,13 @@ def build_system_prompt() -> str:
     """
     return (
         "You are Overmind's execution worker. "
-        "Return only JSON with keys: summary, files. "
-        "Each file entry must include path and content. "
-        "Do not include markdown or explanations."
+        "You MUST respond with ONLY a JSON object and nothing else. "
+        "No analysis, no explanation, no markdown, no text before or after the JSON. "
+        "The JSON must have exactly two keys: \"summary\" (a short string describing "
+        "what you changed) and \"files\" (an array of objects each with \"path\" and "
+        "\"content\" keys). "
+        "Example: {\"summary\": \"Added hello world\", \"files\": [{\"path\": \"index.js\", "
+        "\"content\": \"console.log('hello');\"}]}"
     )
 
 
@@ -355,6 +359,7 @@ async def call_llm(req: RunCreateRequest) -> LlmResponse:
         "temperature": 0,
         "top_p": 1,
         "seed": 0,
+        "response_format": {"type": "json_object"},
     }
 
     url = f"{LLM_URL}/v1/chat/completions"
