@@ -26,6 +26,7 @@ MODEL_ID = os.environ.get("MODEL_ID", "openai/gpt-oss-20b")
 LLM_URL = os.environ.get("OVERMIND_LLM_URL", DEFAULT_LLM_URL).rstrip("/")
 LLM_TIMEOUT_S = int(os.environ.get("OVERMIND_LLM_TIMEOUT_S", "3600"))
 LOG_TRUNCATE_CHARS = 1000
+MAX_LLM_RETRIES = 2
 LLM_SECRET_NAME = "overmind-llm-auth"
 
 STAGE_SPAWNING = "Spawning sandbox..."
@@ -364,40 +365,59 @@ async def call_llm(req: RunCreateRequest) -> LlmResponse:
 
     url = f"{LLM_URL}/v1/chat/completions"
     user_prompt_len = len(build_user_prompt(req))
-    log(f"call_llm: POST {url} model={MODEL_ID} prompt_len={user_prompt_len}")
+    timeout = httpx.Timeout(timeout=LLM_TIMEOUT_S, connect=30.0)
 
-    async with httpx.AsyncClient(timeout=LLM_TIMEOUT_S) as client:
-        response = await client.post(url, headers=headers, json=payload)
-        log(f"call_llm: response status={response.status_code}")
-        response.raise_for_status()
-        data = response.json()
+    for attempt in range(MAX_LLM_RETRIES):
+        log(f"call_llm: attempt={attempt + 1} POST {url} model={MODEL_ID} prompt_len={user_prompt_len}")
 
-    choices = data.get("choices")
-    if not choices:
-        raise ValueError("LLM response missing choices")
-    message = choices[0].get("message") or {}
-    content = message.get("content")
-    if not isinstance(content, str) or not content.strip():
-        raise ValueError("LLM response missing content")
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.post(url, headers=headers, json=payload)
+            log(f"call_llm: response status={response.status_code}")
+            response.raise_for_status()
+            data = response.json()
 
-    log(f"call_llm: raw content ({len(content)} chars): {content[:500]}")
+        choices = data.get("choices")
+        if not choices:
+            raise ValueError("LLM response missing choices")
+        message = choices[0].get("message") or {}
+        content = message.get("content")
+        if not isinstance(content, str) or not content.strip():
+            raise ValueError("LLM response missing content")
 
-    cleaned = strip_code_fences(content)
-    try:
-        parsed = json.loads(cleaned)
-    except json.JSONDecodeError:
-        log(f"call_llm: direct JSON parse failed, attempting JSON extraction")
+        log(f"call_llm: raw content ({len(content)} chars): {content[:500]}")
+
+        cleaned = strip_code_fences(content)
+        parsed = None
         try:
-            extracted = extract_json_object(cleaned)
-            parsed = json.loads(extracted)
-            log(f"call_llm: extracted JSON successfully ({len(extracted)} chars)")
-        except (ValueError, json.JSONDecodeError) as exc:
-            log(f"call_llm: JSON extraction also failed: {exc} | cleaned[:200]={cleaned[:200]}")
-            raise
+            parsed = json.loads(cleaned)
+        except json.JSONDecodeError:
+            log(f"call_llm: direct JSON parse failed, attempting extraction")
+            try:
+                extracted = extract_json_object(cleaned)
+                parsed = json.loads(extracted)
+                log(f"call_llm: extracted JSON ({len(extracted)} chars)")
+            except (ValueError, json.JSONDecodeError):
+                pass
 
-    result = validate_llm_response(parsed)
-    log(f"call_llm: valid response summary_len={len(result.summary)} files={len(result.files)}")
-    return result
+        if parsed is not None:
+            try:
+                result = validate_llm_response(parsed)
+                log(f"call_llm: valid response summary_len={len(result.summary)} files={len(result.files)}")
+                return result
+            except (ValidationError, Exception) as exc:
+                log(f"call_llm: validation failed: {exc}")
+                parsed = None
+
+        if attempt < MAX_LLM_RETRIES - 1:
+            log(f"call_llm: attempt {attempt + 1} failed, retrying")
+        else:
+            log(f"call_llm: all {MAX_LLM_RETRIES} attempts failed | cleaned[:300]={cleaned[:300]}")
+            raise ValueError(
+                f"LLM did not produce valid JSON after {MAX_LLM_RETRIES} attempts. "
+                f"Last output: {cleaned[:200]}"
+            )
+
+    raise ValueError("LLM call failed: no attempts made")
 
 
 @app.function(

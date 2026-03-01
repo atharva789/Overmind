@@ -140,6 +140,7 @@ class LLMServer:
         temperature: float,
         top_p: float,
         seed: int,
+        json_mode: bool = False,
     ) -> str:
         """
         Generate text for a single request using the active engine.
@@ -151,12 +152,20 @@ class LLMServer:
         from vllm.utils import random_uuid
 
         request_id = random_uuid()
-        sampling_params = SamplingParams(
+        kwargs: dict = dict(
             temperature=temperature,
             top_p=top_p,
             seed=seed,
             max_tokens=8192,
         )
+        if json_mode:
+            try:
+                from vllm.sampling_params import GuidedDecodingParams
+                kwargs["guided_decoding"] = GuidedDecodingParams(json_object=True)
+                log_event("guided JSON decoding enabled")
+            except (ImportError, TypeError) as exc:
+                log_event(f"guided JSON decoding not available: {exc}")
+        sampling_params = SamplingParams(**kwargs)
 
         generator = self.engine.generate(prompt, sampling_params, request_id)
         final_output = None
@@ -173,7 +182,8 @@ class LLMServer:
         prompt: str,
         temperature: float = 0.0,
         top_p: float = 1.0,
-        seed: int = 0
+        seed: int = 0,
+        json_mode: bool = False,
     ) -> str:
         """
         Internal generation method executing on the GPU container.
@@ -190,6 +200,7 @@ class LLMServer:
                     temperature,
                     top_p,
                     seed,
+                    json_mode=json_mode,
                 )
             except EngineDeadError as exc:
                 if attempt == 1:
@@ -229,7 +240,9 @@ class LLMServer:
                     detail="messages must be a non-empty list",
                 )
 
-            log_event(f"chat_completions: incoming request messages={len(messages)} model={body.get('model', 'N/A')}")
+            resp_fmt = body.get("response_format") or {}
+            json_mode = resp_fmt.get("type") == "json_object"
+            log_event(f"chat_completions: incoming messages={len(messages)} model={body.get('model', 'N/A')} json_mode={json_mode}")
 
             await self._ensure_engine()
             tokenizer = self.engine.get_tokenizer()
@@ -248,6 +261,7 @@ class LLMServer:
                     temperature=body.get("temperature", 0.0),
                     top_p=body.get("top_p", 1.0),
                     seed=body.get("seed", 0),
+                    json_mode=json_mode,
                 )
             except Exception as exc:
                 log_event(f"generation failed after {time.monotonic() - t0:.1f}s: {exc}")
