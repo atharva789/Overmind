@@ -17,7 +17,7 @@ from typing import Any, Optional
 import httpx
 import modal
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel
 
 APP_NAME = "overmind-orchestrator"
 RUN_STORE_NAME = "overmind-orchestrator-runs"
@@ -26,7 +26,8 @@ MODEL_ID = os.environ.get("MODEL_ID", "openai/gpt-oss-20b")
 LLM_URL = os.environ.get("OVERMIND_LLM_URL", DEFAULT_LLM_URL).rstrip("/")
 LLM_TIMEOUT_S = int(os.environ.get("OVERMIND_LLM_TIMEOUT_S", "3600"))
 LOG_TRUNCATE_CHARS = 1000
-MAX_LLM_RETRIES = 2
+MAX_AGENT_ROUNDS = 10
+MAX_PARSE_RETRIES = 2
 LLM_SECRET_NAME = "overmind-llm-auth"
 
 STAGE_SPAWNING = "Spawning sandbox..."
@@ -67,7 +68,12 @@ class FileChange(BaseModel):
     content: str
 
 
-class LlmResponse(BaseModel):
+class ToolCall(BaseModel):
+    tool: str
+    args: dict[str, str]
+
+
+class AgentResult(BaseModel):
     summary: str
     files: list[FileChange]
 
@@ -104,103 +110,91 @@ def log(message: str) -> None:
     print(f"[{ts}] {truncated}")
 
 
-def build_system_prompt() -> str:
-    """
-    Build the system prompt for deterministic JSON output.
-    Does not depend on runtime state.
-    Edge cases: None.
-    Invariants: Returns a single-line instruction string.
-    """
+AGENT_SYSTEM_PROMPT = """\
+You are Overmind's execution worker. You modify codebases by calling tools.
+
+You MUST respond with ONLY a JSON object on each turn. No prose, no markdown.
+
+Available tools:
+
+1. read_file — read a file's contents
+   {"tool": "read_file", "args": {"path": "src/index.ts"}}
+
+2. write_file — create or overwrite a file
+   {"tool": "write_file", "args": {"path": "src/index.ts", "content": "file content here"}}
+
+3. list_files — list all available file paths
+   {"tool": "list_files", "args": {}}
+
+4. finish — end the task and report what you did
+   {"tool": "finish", "args": {"summary": "Added login endpoint"}}
+
+Workflow:
+- First, use list_files or read_file to understand the codebase.
+- Then, use write_file to make changes.
+- Finally, call finish with a summary of what you changed.
+
+Respond with exactly one JSON tool call per turn. No extra text.\
+"""
+
+
+def build_agent_user_message(req: RunCreateRequest) -> str:
+    file_list = ", ".join(sorted(req.files.keys())) if req.files else "(no files)"
+    scope_str = ", ".join(req.scope) if req.scope else "(all files)"
     return (
-        "You are Overmind's execution worker. "
-        "You MUST respond with ONLY a JSON object and nothing else. "
-        "No analysis, no explanation, no markdown, no text before or after the JSON. "
-        "The JSON must have exactly two keys: \"summary\" (a short string describing "
-        "what you changed) and \"files\" (an array of objects each with \"path\" and "
-        "\"content\" keys). "
-        "Example: {\"summary\": \"Added hello world\", \"files\": [{\"path\": \"index.js\", "
-        "\"content\": \"console.log('hello');\"}]}"
+        f"Story: {req.story}\n"
+        f"Scope: {scope_str}\n"
+        f"Available files: {file_list}\n\n"
+        f"Task: {req.prompt}"
     )
 
 
-def build_user_prompt(req: RunCreateRequest) -> str:
-    """
-    Build the user prompt with story, scope, and file pack.
-    Does not log prompt content.
-    Edge cases: Missing scope yields an empty array.
-    Invariants: JSON output is sorted for deterministic ordering.
-    """
-    payload = {
-        "prompt": req.prompt,
-        "promptId": req.promptId,
-        "story": req.story,
-        "scope": req.scope or [],
-        "files": req.files,
-    }
-    return json.dumps(payload, ensure_ascii=False, sort_keys=True)
+MAX_TOOL_RESULT_CHARS = 12000
 
 
-def strip_code_fences(text: str) -> str:
-    """
-    Remove surrounding markdown code fences if present.
-    Does not alter inner JSON content.
-    Edge cases: Returns trimmed input when no fences are present.
-    Invariants: Output contains no leading or trailing whitespace.
-    """
-    trimmed = text.strip()
-    if trimmed.startswith("```"):
-        trimmed = re.sub(r"^```[a-zA-Z0-9]*\n?", "", trimmed)
-        if trimmed.endswith("```"):
-            trimmed = trimmed[: -3]
-    return trimmed.strip()
+def execute_tool(
+    name: str, args: dict[str, str], req_files: dict[str, str], workspace: dict[str, str]
+) -> str:
+    if name == "read_file":
+        path = args.get("path", "")
+        if path in workspace:
+            content = workspace[path]
+        elif path in req_files:
+            content = req_files[path]
+        else:
+            return f"Error: file not found: {path}"
+        if len(content) > MAX_TOOL_RESULT_CHARS:
+            return content[:MAX_TOOL_RESULT_CHARS] + f"\n... (truncated, {len(content)} total chars)"
+        return content
+    elif name == "write_file":
+        path = args.get("path", "")
+        content = args.get("content", "")
+        workspace[path] = content
+        return f"OK: wrote {len(content)} chars to {path}"
+    elif name == "list_files":
+        all_paths = sorted(set(list(req_files.keys()) + list(workspace.keys())))
+        return "\n".join(all_paths) if all_paths else "(no files)"
+    elif name == "finish":
+        return args.get("summary", "")
+    else:
+        return f"Error: unknown tool: {name}"
 
 
-def extract_json_object(text: str) -> str:
-    """
-    Extract the first top-level JSON object from text that may contain prose.
-    Finds the first '{' and matches it to its closing '}' respecting nesting.
-    Edge cases: Raises ValueError if no JSON object is found.
-    Invariants: Returns a string starting with '{' and ending with '}'.
-    """
-    start = text.find("{")
+def parse_tool_call(content: str) -> ToolCall:
+    cleaned = content.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```[a-zA-Z0-9]*\n?", "", cleaned)
+        if cleaned.endswith("```"):
+            cleaned = cleaned[:-3]
+        cleaned = cleaned.strip()
+    start = cleaned.find("{")
     if start == -1:
-        raise ValueError("No JSON object found in LLM output")
-    depth = 0
-    in_string = False
-    escape = False
-    for i in range(start, len(text)):
-        ch = text[i]
-        if escape:
-            escape = False
-            continue
-        if ch == "\\":
-            if in_string:
-                escape = True
-            continue
-        if ch == '"':
-            in_string = not in_string
-            continue
-        if in_string:
-            continue
-        if ch == "{":
-            depth += 1
-        elif ch == "}":
-            depth -= 1
-            if depth == 0:
-                return text[start : i + 1]
-    raise ValueError("Unterminated JSON object in LLM output")
-
-
-def validate_llm_response(payload: Any) -> LlmResponse:
-    """
-    Validate the LLM JSON output against the response schema.
-    Does not coerce invalid types.
-    Edge cases: Raises ValidationError on mismatch.
-    Invariants: Returned object conforms to LlmResponse.
-    """
-    if hasattr(LlmResponse, "model_validate"):
-        return LlmResponse.model_validate(payload)
-    return LlmResponse.parse_obj(payload)
+        raise ValueError(f"No JSON object in model response: {cleaned[:200]}")
+    end = cleaned.rfind("}")
+    if end == -1:
+        raise ValueError(f"No closing brace in model response: {cleaned[:200]}")
+    parsed = json.loads(cleaned[start : end + 1])
+    return ToolCall(tool=parsed["tool"], args=parsed.get("args", {}))
 
 
 async def read_run_record(run_id: str) -> RunStatusRecord:
@@ -220,14 +214,14 @@ async def read_run_record(run_id: str) -> RunStatusRecord:
 
 def run_record_to_dict(record: RunStatusRecord) -> dict[str, Any]:
     """
-    Convert a run record to a plain dict.
+    Convert a run record to a plain dict, omitting None values.
     Does not mutate the input record.
     Edge cases: Supports both Pydantic v1 and v2 APIs.
-    Invariants: Output is JSON-serializable.
+    Invariants: Output is JSON-serializable with no null values.
     """
     if hasattr(record, "model_dump"):
-        return record.model_dump()
-    return record.dict()
+        return record.model_dump(exclude_none=True)
+    return {k: v for k, v in record.dict().items() if v is not None}
 
 
 async def write_run_record(run_id: str, record: RunStatusRecord) -> None:
@@ -321,10 +315,10 @@ async def mark_run_failed(run_id: str, stage: str, detail: str, error: str) -> N
     )
 
 
-async def mark_run_completed(run_id: str, result: LlmResponse) -> None:
+async def mark_run_completed(run_id: str, result: AgentResult) -> None:
     """
     Mark a run as completed with extracted files and summary.
-    Does not mutate the LlmResponse object.
+    Does not mutate the AgentResult object.
     Edge cases: Missing runs raise KeyError.
     Invariants: Status is set to STATUS_COMPLETED.
     """
@@ -339,40 +333,40 @@ async def mark_run_completed(run_id: str, result: LlmResponse) -> None:
     )
 
 
-async def call_llm(req: RunCreateRequest) -> LlmResponse:
-    """
-    Call the vLLM OpenAI-compatible server and parse the response.
-    Does not log prompt content.
-    Edge cases: Raises on HTTP or JSON parse failures.
-    Invariants: Returns a validated LlmResponse object.
-    """
+async def agent_loop(req: RunCreateRequest, run_id: str) -> AgentResult:
     headers = {"Content-Type": "application/json"}
     api_key = os.environ.get("OVERMIND_LLM_API_KEY")
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
 
-    payload = {
-        "model": MODEL_ID,
-        "messages": [
-            {"role": "system", "content": build_system_prompt()},
-            {"role": "user", "content": build_user_prompt(req)},
-        ],
-        "temperature": 0,
-        "top_p": 1,
-        "seed": 0,
-        "response_format": {"type": "json_object"},
-    }
-
     url = f"{LLM_URL}/v1/chat/completions"
-    user_prompt_len = len(build_user_prompt(req))
     timeout = httpx.Timeout(timeout=LLM_TIMEOUT_S, connect=30.0)
 
-    for attempt in range(MAX_LLM_RETRIES):
-        log(f"call_llm: attempt={attempt + 1} POST {url} model={MODEL_ID} prompt_len={user_prompt_len}")
+    messages: list[dict[str, str]] = [
+        {"role": "system", "content": AGENT_SYSTEM_PROMPT},
+        {"role": "user", "content": build_agent_user_message(req)},
+    ]
+
+    workspace: dict[str, str] = {}
+
+    for round_num in range(1, MAX_AGENT_ROUNDS + 1):
+        if await should_cancel(run_id):
+            break
+
+        log(f"agent_loop: run_id={run_id} round={round_num}/{MAX_AGENT_ROUNDS} messages={len(messages)}")
+
+        payload = {
+            "model": MODEL_ID,
+            "messages": messages,
+            "temperature": 0,
+            "top_p": 1,
+            "seed": 0,
+            "response_format": {"type": "json_object"},
+        }
 
         async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.post(url, headers=headers, json=payload)
-            log(f"call_llm: response status={response.status_code}")
+            log(f"agent_loop: response status={response.status_code}")
             response.raise_for_status()
             data = response.json()
 
@@ -384,40 +378,43 @@ async def call_llm(req: RunCreateRequest) -> LlmResponse:
         if not isinstance(content, str) or not content.strip():
             raise ValueError("LLM response missing content")
 
-        log(f"call_llm: raw content ({len(content)} chars): {content[:500]}")
+        log(f"agent_loop: round={round_num} content ({len(content)} chars): {content[:300]}")
 
-        cleaned = strip_code_fences(content)
-        parsed = None
         try:
-            parsed = json.loads(cleaned)
-        except json.JSONDecodeError:
-            log(f"call_llm: direct JSON parse failed, attempting extraction")
-            try:
-                extracted = extract_json_object(cleaned)
-                parsed = json.loads(extracted)
-                log(f"call_llm: extracted JSON ({len(extracted)} chars)")
-            except (ValueError, json.JSONDecodeError):
-                pass
+            tool_call = parse_tool_call(content)
+        except (json.JSONDecodeError, ValueError, KeyError) as exc:
+            log(f"agent_loop: parse failed round={round_num}: {exc}")
+            messages.append({"role": "assistant", "content": content})
+            messages.append({
+                "role": "user",
+                "content": (
+                    "Your previous response was not valid JSON. "
+                    "Respond with ONLY a JSON object like: "
+                    '{"tool": "read_file", "args": {"path": "file.ts"}}'
+                ),
+            })
+            continue
 
-        if parsed is not None:
-            try:
-                result = validate_llm_response(parsed)
-                log(f"call_llm: valid response summary_len={len(result.summary)} files={len(result.files)}")
-                return result
-            except (ValidationError, Exception) as exc:
-                log(f"call_llm: validation failed: {exc}")
-                parsed = None
+        messages.append({"role": "assistant", "content": content})
 
-        if attempt < MAX_LLM_RETRIES - 1:
-            log(f"call_llm: attempt {attempt + 1} failed, retrying")
-        else:
-            log(f"call_llm: all {MAX_LLM_RETRIES} attempts failed | cleaned[:300]={cleaned[:300]}")
-            raise ValueError(
-                f"LLM did not produce valid JSON after {MAX_LLM_RETRIES} attempts. "
-                f"Last output: {cleaned[:200]}"
-            )
+        if tool_call.tool == "finish":
+            summary = tool_call.args.get("summary", "Changes applied")
+            log(f"agent_loop: finished at round {round_num}: {summary}")
+            files = [FileChange(path=p, content=c) for p, c in sorted(workspace.items())]
+            return AgentResult(summary=summary, files=files)
 
-    raise ValueError("LLM call failed: no attempts made")
+        await update_run_record(run_id, {
+            "stage": STAGE_WORKING,
+            "detail": f"Round {round_num}: {tool_call.tool}({', '.join(f'{k}={v[:50]}' for k, v in tool_call.args.items() if k != 'content')})",
+        })
+
+        result = execute_tool(tool_call.tool, tool_call.args, req.files, workspace)
+        log(f"agent_loop: tool={tool_call.tool} result_len={len(result)}")
+        messages.append({"role": "user", "content": f"Tool result:\n{result}"})
+
+    log(f"agent_loop: run_id={run_id} exhausted {MAX_AGENT_ROUNDS} rounds, returning workspace")
+    files = [FileChange(path=p, content=c) for p, c in sorted(workspace.items())]
+    return AgentResult(summary="Agent completed (max rounds reached)", files=files)
 
 
 @app.function(
@@ -441,22 +438,13 @@ async def run_worker(run_id: str, req: RunCreateRequest) -> None:
         return
 
     try:
-        result = await call_llm(req)
-    except (ValidationError, json.JSONDecodeError, ValueError) as exc:
-        log(f"run_worker: run_id={run_id} parse/validation error:\n{traceback.format_exc()}")
-        await mark_run_failed(
-            run_id,
-            STAGE_EXTRACTING,
-            "Invalid LLM response.",
-            str(exc),
-        )
-        return
+        result = await agent_loop(req, run_id)
     except Exception as exc:
-        log(f"run_worker: run_id={run_id} execution error:\n{traceback.format_exc()}")
+        log(f"run_worker: run_id={run_id} agent error:\n{traceback.format_exc()}")
         await mark_run_failed(
             run_id,
             STAGE_WORKING,
-            "LLM execution failed.",
+            "Agent execution failed.",
             str(exc),
         )
         return
