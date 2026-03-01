@@ -169,7 +169,7 @@ async def read_run_record(run_id: str) -> RunStatusRecord:
     Edge cases: Raises KeyError if run is missing.
     Invariants: Returned record is schema-validated.
     """
-    raw = await run_store.get(run_id)
+    raw = await run_store.get.aio(run_id)
     if raw is None:
         raise KeyError(f"run not found: {run_id}")
     if hasattr(RunStatusRecord, "model_validate"):
@@ -196,7 +196,7 @@ async def write_run_record(run_id: str, record: RunStatusRecord) -> None:
     Edge cases: Overwrites any existing entry.
     Invariants: Stored records include updatedAt.
     """
-    await run_store.put(run_id, run_record_to_dict(record))
+    await run_store.put.aio(run_id, run_record_to_dict(record))
 
 
 async def update_run_record(run_id: str, updates: dict[str, Any]) -> None:
@@ -430,7 +430,7 @@ async def create_run(req: RunCreateRequest) -> RunCreateResponse:
     Edge cases: Rejects duplicate run IDs.
     Invariants: Newly created runs start in queued state.
     """
-    if await run_store.get(req.runId) is not None:
+    if await run_store.get.aio(req.runId) is not None:
         raise HTTPException(status_code=409, detail="run already exists")
 
     log(
