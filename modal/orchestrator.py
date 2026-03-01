@@ -144,10 +144,46 @@ def strip_code_fences(text: str) -> str:
     """
     trimmed = text.strip()
     if trimmed.startswith("```"):
-        trimmed = re.sub(r"^```[a-zA-Z0-9]*\\n", "", trimmed)
+        trimmed = re.sub(r"^```[a-zA-Z0-9]*\n?", "", trimmed)
         if trimmed.endswith("```"):
             trimmed = trimmed[: -3]
     return trimmed.strip()
+
+
+def extract_json_object(text: str) -> str:
+    """
+    Extract the first top-level JSON object from text that may contain prose.
+    Finds the first '{' and matches it to its closing '}' respecting nesting.
+    Edge cases: Raises ValueError if no JSON object is found.
+    Invariants: Returns a string starting with '{' and ending with '}'.
+    """
+    start = text.find("{")
+    if start == -1:
+        raise ValueError("No JSON object found in LLM output")
+    depth = 0
+    in_string = False
+    escape = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if escape:
+            escape = False
+            continue
+        if ch == "\\":
+            if in_string:
+                escape = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : i + 1]
+    raise ValueError("Unterminated JSON object in LLM output")
 
 
 def validate_llm_response(payload: Any) -> LlmResponse:
@@ -344,9 +380,15 @@ async def call_llm(req: RunCreateRequest) -> LlmResponse:
     cleaned = strip_code_fences(content)
     try:
         parsed = json.loads(cleaned)
-    except json.JSONDecodeError as exc:
-        log(f"call_llm: JSON parse failed: {exc} | cleaned[:200]={cleaned[:200]}")
-        raise
+    except json.JSONDecodeError:
+        log(f"call_llm: direct JSON parse failed, attempting JSON extraction")
+        try:
+            extracted = extract_json_object(cleaned)
+            parsed = json.loads(extracted)
+            log(f"call_llm: extracted JSON successfully ({len(extracted)} chars)")
+        except (ValueError, json.JSONDecodeError) as exc:
+            log(f"call_llm: JSON extraction also failed: {exc} | cleaned[:200]={cleaned[:200]}")
+            raise
 
     result = validate_llm_response(parsed)
     log(f"call_llm: valid response summary_len={len(result.summary)} files={len(result.files)}")
