@@ -162,14 +162,14 @@ def validate_llm_response(payload: Any) -> LlmResponse:
     return LlmResponse.parse_obj(payload)
 
 
-def read_run_record(run_id: str) -> RunStatusRecord:
+async def read_run_record(run_id: str) -> RunStatusRecord:
     """
     Load a run record from the Modal dictionary.
     Does not create missing records.
     Edge cases: Raises KeyError if run is missing.
     Invariants: Returned record is schema-validated.
     """
-    raw = run_store.get(run_id)
+    raw = await run_store.get(run_id)
     if raw is None:
         raise KeyError(f"run not found: {run_id}")
     if hasattr(RunStatusRecord, "model_validate"):
@@ -189,31 +189,31 @@ def run_record_to_dict(record: RunStatusRecord) -> dict[str, Any]:
     return record.dict()
 
 
-def write_run_record(run_id: str, record: RunStatusRecord) -> None:
+async def write_run_record(run_id: str, record: RunStatusRecord) -> None:
     """
     Persist a run record to the Modal dictionary.
     Does not mutate the input record.
     Edge cases: Overwrites any existing entry.
     Invariants: Stored records include updatedAt.
     """
-    run_store[run_id] = run_record_to_dict(record)
+    await run_store.put(run_id, run_record_to_dict(record))
 
 
-def update_run_record(run_id: str, updates: dict[str, Any]) -> None:
+async def update_run_record(run_id: str, updates: dict[str, Any]) -> None:
     """
     Update an existing run record with new fields.
     Does not create records when missing.
     Edge cases: Raises KeyError if run is missing.
     Invariants: updatedAt is always refreshed.
     """
-    record = read_run_record(run_id)
+    record = await read_run_record(run_id)
     data = run_record_to_dict(record)
     data.update(updates)
     data["updatedAt"] = now_iso()
-    write_run_record(run_id, RunStatusRecord(**data))
+    await write_run_record(run_id, RunStatusRecord(**data))
 
 
-def should_cancel(run_id: str) -> bool:
+async def should_cancel(run_id: str) -> bool:
     """
     Determine if a run has been canceled.
     Does not mutate run state.
@@ -221,20 +221,20 @@ def should_cancel(run_id: str) -> bool:
     Invariants: Canceled status is treated as terminal.
     """
     try:
-        record = read_run_record(run_id)
+        record = await read_run_record(run_id)
     except KeyError:
         return False
     return record.status == STATUS_CANCELED
 
 
-def mark_run_running(run_id: str) -> None:
+async def mark_run_running(run_id: str) -> None:
     """
     Mark a run as running with the working stage.
     Does not validate run existence.
     Edge cases: Missing runs raise KeyError.
     Invariants: Stage is set to STAGE_WORKING.
     """
-    update_run_record(
+    await update_run_record(
         run_id,
         {
             "status": STATUS_RUNNING,
@@ -245,14 +245,14 @@ def mark_run_running(run_id: str) -> None:
     )
 
 
-def mark_run_canceled(run_id: str, detail: str) -> None:
+async def mark_run_canceled(run_id: str, detail: str) -> None:
     """
     Mark a run as canceled with a detail message.
     Does not terminate running workers.
     Edge cases: Missing runs raise KeyError.
     Invariants: Status is set to STATUS_CANCELED.
     """
-    update_run_record(
+    await update_run_record(
         run_id,
         {
             "status": STATUS_CANCELED,
@@ -262,14 +262,14 @@ def mark_run_canceled(run_id: str, detail: str) -> None:
     )
 
 
-def mark_run_failed(run_id: str, stage: str, detail: str, error: str) -> None:
+async def mark_run_failed(run_id: str, stage: str, detail: str, error: str) -> None:
     """
     Mark a run as failed with detail and error.
     Does not retry failed executions.
     Edge cases: Missing runs raise KeyError.
     Invariants: Status is set to STATUS_FAILED.
     """
-    update_run_record(
+    await update_run_record(
         run_id,
         {
             "status": STATUS_FAILED,
@@ -280,14 +280,14 @@ def mark_run_failed(run_id: str, stage: str, detail: str, error: str) -> None:
     )
 
 
-def mark_run_completed(run_id: str, result: LlmResponse) -> None:
+async def mark_run_completed(run_id: str, result: LlmResponse) -> None:
     """
     Mark a run as completed with extracted files and summary.
     Does not mutate the LlmResponse object.
     Edge cases: Missing runs raise KeyError.
     Invariants: Status is set to STATUS_COMPLETED.
     """
-    update_run_record(
+    await update_run_record(
         run_id,
         {
             "status": STATUS_COMPLETED,
@@ -366,18 +366,18 @@ async def run_worker(run_id: str, req: RunCreateRequest) -> None:
     Invariants: Updates run status on all exit paths.
     """
     log(f"run_worker: start run_id={run_id} prompt_len={len(req.prompt)} files={len(req.files)}")
-    mark_run_running(run_id)
+    await mark_run_running(run_id)
 
-    if should_cancel(run_id):
+    if await should_cancel(run_id):
         log(f"run_worker: run_id={run_id} canceled before execution")
-        mark_run_canceled(run_id, "Run canceled before execution.")
+        await mark_run_canceled(run_id, "Run canceled before execution.")
         return
 
     try:
         result = await call_llm(req)
     except (ValidationError, json.JSONDecodeError, ValueError) as exc:
         log(f"run_worker: run_id={run_id} parse/validation error:\n{traceback.format_exc()}")
-        mark_run_failed(
+        await mark_run_failed(
             run_id,
             STAGE_EXTRACTING,
             "Invalid LLM response.",
@@ -386,7 +386,7 @@ async def run_worker(run_id: str, req: RunCreateRequest) -> None:
         return
     except Exception as exc:
         log(f"run_worker: run_id={run_id} execution error:\n{traceback.format_exc()}")
-        mark_run_failed(
+        await mark_run_failed(
             run_id,
             STAGE_WORKING,
             "LLM execution failed.",
@@ -395,7 +395,7 @@ async def run_worker(run_id: str, req: RunCreateRequest) -> None:
         return
 
     log(f"run_worker: run_id={run_id} completed summary_len={len(result.summary)} files={len(result.files)}")
-    mark_run_completed(run_id, result)
+    await mark_run_completed(run_id, result)
 
 
 @web_app.get("/health")
@@ -430,7 +430,7 @@ async def create_run(req: RunCreateRequest) -> RunCreateResponse:
     Edge cases: Rejects duplicate run IDs.
     Invariants: Newly created runs start in queued state.
     """
-    if run_store.get(req.runId) is not None:
+    if await run_store.get(req.runId) is not None:
         raise HTTPException(status_code=409, detail="run already exists")
 
     log(
@@ -448,7 +448,7 @@ async def create_run(req: RunCreateRequest) -> RunCreateResponse:
         error=None,
         updatedAt=now_iso(),
     )
-    write_run_record(req.runId, record)
+    await write_run_record(req.runId, record)
 
     run_worker.spawn(req.runId, req)
     return RunCreateResponse(runId=req.runId)
@@ -463,7 +463,7 @@ async def get_run(run_id: str) -> dict[str, object]:
     Invariants: Responses are schema-validated.
     """
     try:
-        record = read_run_record(run_id)
+        record = await read_run_record(run_id)
     except KeyError:
         raise HTTPException(status_code=404, detail="run not found")
     return run_record_to_dict(record)
@@ -478,14 +478,14 @@ async def cancel_run(run_id: str) -> dict[str, object]:
     Invariants: Canceled runs remain terminal.
     """
     try:
-        record = read_run_record(run_id)
+        record = await read_run_record(run_id)
     except KeyError:
         raise HTTPException(status_code=404, detail="run not found")
 
     if record.status in {STATUS_COMPLETED, STATUS_FAILED}:
         return {"ok": True}
 
-    update_run_record(
+    await update_run_record(
         run_id,
         {
             "status": STATUS_CANCELED,
