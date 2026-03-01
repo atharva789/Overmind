@@ -40,7 +40,7 @@ export const RECONNECT_MAX_MS = 10000;
 
 // ─── Greenlight ───
 export const GREENLIGHT_BACKEND_DEFAULT = "gemini";
-export const GEMINI_MODEL_DEFAULT = "gemini-3.0-flash";
+export const GEMINI_MODEL_DEFAULT = "gemini-3-flash-preview";
 export const GLM_MODEL_DEFAULT = "glm-5.0";
 export const MAX_TOOL_ROUNDS = 5;
 export const EVAL_TIMEOUT_MS = 30000;

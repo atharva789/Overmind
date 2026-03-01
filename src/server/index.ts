@@ -201,7 +201,7 @@ function spawnBridgeProcess(): void {
     if (bridgeProcess) return;
 
     bridgeProcess = spawn(
-        "python",
+        "python3",
         ["-m", "uvicorn", "bridge:app", "--port", String(MODAL_BRIDGE_PORT)],
         {
             cwd: "modal-bridge",
