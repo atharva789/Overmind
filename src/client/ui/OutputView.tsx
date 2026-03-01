@@ -40,6 +40,37 @@ const STATUS_CONFIG: Record<OutputStatus, { color: string; label: string; dot: s
     error: { color: "red", label: "ERROR", dot: "✕" },
 };
 
+function BlinkingVerdict({ entry }: { entry: OutputEntry }) {
+    const [visible, setVisible] = React.useState(true);
+    const [blinking, setBlinking] = React.useState(true);
+
+    React.useEffect(() => {
+        const blinkInterval = setInterval(() => {
+            setVisible(v => !v);
+        }, 500);
+        const stopTimer = setTimeout(() => {
+            setBlinking(false);
+            setVisible(true);
+            clearInterval(blinkInterval);
+        }, 3000);
+        return () => { clearInterval(blinkInterval); clearTimeout(stopTimer); };
+    }, []);
+
+    return (
+        <Box flexDirection="column" marginBottom={0}>
+            <Box>
+                <Text color="green" bold dimColor={blinking && !visible}>● </Text>
+                <Text bold dimColor={blinking && !visible}>{entry.message}</Text>
+            </Box>
+            {entry.promptContent && (
+                <Text color="gray" dimColor={blinking && !visible} wrap="truncate">
+                    {"  "}{entry.promptContent}
+                </Text>
+            )}
+        </Box>
+    );
+}
+
 const MAX_VISIBLE = 20;
 
 export default function OutputView({
@@ -73,8 +104,12 @@ export default function OutputView({
                 const isActive = entry.status === "queued";
                 const isVerdict = entry.status === "greenlit" || entry.status === "redlit" || entry.status === "feature-created";
 
+                if (isVerdict && (entry.status === "feature-created" || entry.status === "greenlit")) {
+                    return <BlinkingVerdict key={entry.id} entry={entry} />;
+                }
+
                 if (isVerdict && entry.promptContent) {
-                    // Show prompt text with colored dot for verdicts
+                    // Show prompt text with colored dot for other verdicts (redlit)
                     return (
                         <Box key={entry.id} flexDirection="column" marginBottom={0}>
                             <Box>

@@ -11,7 +11,7 @@ import { DEFAULT_PORT, MAX_MEMBERS_DEFAULT } from "./shared/constants.js";
 import { decodeInviteCode, encodeInviteCode, isInviteCode } from "./shared/invite.js";
 import App from "./client/ui/App.js";
 import clipboardy from "clipboardy";
-import { basename } from "path";
+import { deriveProjectId } from "./shared/project-id.js";
 import { pool } from "./server/db.js";
 import { generateInitialStory } from "./server/story/agent.js";
 import { GoogleGenAI } from "@google/genai";
@@ -41,7 +41,7 @@ program
         process.env["OVERMIND_PORT"] = String(port);
 
         const projectRoot = process.env["OVERMIND_PROJECT_ROOT"] ?? process.cwd();
-        const projectId = basename(projectRoot);
+        const projectId = deriveProjectId(projectRoot);
 
         // --- Core Features Setup Wizard ---
         try {
@@ -83,8 +83,9 @@ program
                     partyCode: code,
                     serverUrl: publicUrl.replace(/^tcp:\/\//, "ws://"),
                 });
+                const clipboardText = `overmind join ${inviteCode} --<user>`;
                 try {
-                    clipboardy.writeSync(inviteCode);
+                    clipboardy.writeSync(clipboardText);
                 } catch {
                     // Ignore clipboard errors
                 }
@@ -106,7 +107,7 @@ program
             } else {
                 console.log(`Party started! Code: ${code} (share this with your team)`);
                 if (inviteCode) {
-                    console.log(`Invite code: ${inviteCode} (copied to clipboard!)`);
+                    console.log(`Invite: overmind join ${inviteCode} --<user> (copied to clipboard!)`);
                     console.log(`Public URL: ${publicUrl}`);
                 }
                 console.log(`Waiting for members...`);
@@ -250,7 +251,7 @@ function showBanner(code: string, maxMem: number, inviteCode?: string): void {
         console.log(`  Party code: ${code}`);
     }
     if (inviteCode) {
-        console.log(`  Invite code: ${inviteCode}`);
+        console.log(`  Invite: overmind join ${inviteCode} --<user>`);
     }
     console.log("");
 }

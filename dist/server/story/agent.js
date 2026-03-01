@@ -1,7 +1,8 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { pool } from "../db.js";
 import { writeFile, readFile, readdir } from "fs/promises";
-import { join, basename } from "path";
+import { join } from "path";
+import { deriveProjectId } from "../../shared/project-id.js";
 import { GEMINI_MODEL_DEFAULT } from "../../shared/constants.js";
 const ACTIVE_FEATURES_LIMIT = 15;
 // Define the structured JSON schema for Gemini to evaluate a new query
@@ -37,7 +38,7 @@ export async function checkAndRunStoryAgent(projectRoot) {
     }
     const ai = new GoogleGenAI({ apiKey });
     const model = process.env["OVERMIND_MODEL"] ?? GEMINI_MODEL_DEFAULT;
-    const projectId = basename(projectRoot);
+    const projectId = deriveProjectId(projectRoot);
     try {
         const results = [];
         // Continuous State: Semantically cluster each unclustered query
@@ -110,15 +111,14 @@ async function evaluateAndClusterQuery(ai, model, projectRoot, projectId, query)
     // Fetch the most recent active features for this project to provide as context
     const { rows: features } = await pool.query("SELECT id, title, description FROM features WHERE project_id = $1 ORDER BY created_at DESC LIMIT $2", [projectId, ACTIVE_FEATURES_LIMIT]);
     const featuresList = features.map(f => `Feature ID: ${f.id} | Title: ${f.title}\nDescription: ${f.description}`).join("\n\n");
-    const prompt = `You are the Story Agent. Your task is to analyze a new user query and map it to the project's features.
-Review the list of currently active features below. Does the new user query belong to one of these?
-If YES, output action: "assign_existing" and provide the exact feature_id.
-If NO, output action: "create_new" and provide a strong, descriptive title and description for a newly minted feature.
+    const prompt = `You are the Story Agent for project "${projectId}". Your task is to analyze a new user query and determine if it belongs to an existing feature.
+
+IMPORTANT: Only choose "assign_existing" if the query is CLEARLY and DIRECTLY about the same topic as an existing feature. Superficial keyword overlap is NOT enough. If the query is about a different domain, technology, or problem area, you MUST choose "create_new".
 
 Active Features:
 ${features.length > 0 ? featuresList : "No features exist yet."}
 
-New Query to evaluate:
+New Query:
 User: ${query.username}
 Prompt: ${query.content}
 `;
@@ -130,7 +130,7 @@ Prompt: ${query.content}
             config: {
                 responseMimeType: "application/json",
                 responseSchema: assignmentSchema,
-                temperature: 0.1
+                temperature: 0.0
             }
         });
     }

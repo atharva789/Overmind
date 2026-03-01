@@ -1,4 +1,5 @@
 import { jsx as _jsx, jsxs as _jsxs } from "react/jsx-runtime";
+import React from "react";
 import { Box, Text, useStdout } from "ink";
 import Spinner from "./components/Spinner.js";
 import Badge from "./components/Badge.js";
@@ -13,6 +14,22 @@ const STATUS_CONFIG = {
     complete: { color: "green", label: "COMPLETE", dot: "✓" },
     error: { color: "red", label: "ERROR", dot: "✕" },
 };
+function BlinkingVerdict({ entry }) {
+    const [visible, setVisible] = React.useState(true);
+    const [blinking, setBlinking] = React.useState(true);
+    React.useEffect(() => {
+        const blinkInterval = setInterval(() => {
+            setVisible(v => !v);
+        }, 500);
+        const stopTimer = setTimeout(() => {
+            setBlinking(false);
+            setVisible(true);
+            clearInterval(blinkInterval);
+        }, 3000);
+        return () => { clearInterval(blinkInterval); clearTimeout(stopTimer); };
+    }, []);
+    return (_jsxs(Box, { flexDirection: "column", marginBottom: 0, children: [_jsxs(Box, { children: [_jsx(Text, { color: "green", bold: true, dimColor: blinking && !visible, children: "\u25CF " }), _jsx(Text, { bold: true, dimColor: blinking && !visible, children: entry.message })] }), entry.promptContent && (_jsxs(Text, { color: "gray", dimColor: blinking && !visible, wrap: "truncate", children: ["  ", entry.promptContent] }))] }));
+}
 const MAX_VISIBLE = 20;
 export default function OutputView({ outputs, currentPromptId, }) {
     const { stdout } = useStdout();
@@ -31,8 +48,11 @@ export default function OutputView({ outputs, currentPromptId, }) {
             const config = STATUS_CONFIG[entry.status];
             const isActive = entry.status === "queued";
             const isVerdict = entry.status === "greenlit" || entry.status === "redlit" || entry.status === "feature-created";
+            if (isVerdict && (entry.status === "feature-created" || entry.status === "greenlit")) {
+                return _jsx(BlinkingVerdict, { entry: entry }, entry.id);
+            }
             if (isVerdict && entry.promptContent) {
-                // Show prompt text with colored dot for verdicts
+                // Show prompt text with colored dot for other verdicts (redlit)
                 return (_jsxs(Box, { flexDirection: "column", marginBottom: 0, children: [_jsxs(Box, { children: [_jsxs(Text, { color: config.color, bold: true, children: [config.dot, " "] }), _jsx(Text, { wrap: "truncate", children: entry.promptContent })] }), _jsxs(Text, { color: "gray", wrap: "truncate", children: ["  ", entry.message] })] }, entry.id));
             }
             return (_jsxs(Box, { flexDirection: "column", marginBottom: 0, children: [_jsxs(Box, { children: [_jsx(Badge, { label: config.label, color: config.color }), isActive && _jsx(Spinner, { color: "blue" })] }), _jsxs(Text, { color: "gray", wrap: "truncate", children: ["  ", entry.message] })] }, entry.id));

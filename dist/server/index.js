@@ -5,7 +5,7 @@
  * Invariants: Prompt content is never broadcast to non-host members.
  */
 import { WebSocketServer, WebSocket } from "ws";
-import { basename } from "path";
+import { deriveProjectId } from "../shared/project-id.js";
 import { customAlphabet } from "nanoid";
 import { spawn } from "node:child_process";
 import { Party } from "./party.js";
@@ -554,7 +554,7 @@ export function startServer() {
                 return;
             try {
                 const projectRoot = process.env["OVERMIND_PROJECT_ROOT"] ?? process.cwd();
-                const projectId = basename(projectRoot);
+                const projectId = deriveProjectId(projectRoot);
                 // Insert into DB
                 const insertRes = await pool.query("INSERT INTO queries (project_id, content, username) VALUES ($1, $2, $3) RETURNING id", [projectId, entry.content, entry.username]);
                 const queryId = insertRes.rows[0].id;
