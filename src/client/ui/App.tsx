@@ -311,6 +311,14 @@ function reducer(state: AppState, action: Action): AppState {
             if (action.code === "HOST_DISCONNECTED" || action.code === "PARTY_ENDED") {
                 return { ...state, partyEnded: true, errorMessage: action.message };
             }
+            if (action.code === "EXECUTION_FAILED") {
+                return {
+                    ...state,
+                    errorMessage: action.message,
+                    currentPromptId: null,
+                    execution: null,
+                };
+            }
             return { ...state, errorMessage: action.message };
 
         case "SET_VIEWING":
