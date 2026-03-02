@@ -15,6 +15,8 @@ import { Orchestrator } from "./orchestrator/index.js";
 import { initDb, pool } from "./db.js";
 import { checkAndRunStoryAgent } from "./story/agent.js";
 import { solveMergeConflicts } from "./merge/index.js";
+import { extractScope } from "./execution/scope.js";
+import { executePromptChanges } from "./execution/agent.js";
 const generateConnectionId = customAlphabet("abcdefghijklmnopqrstuvwxyz0123456789", CONNECTION_ID_LENGTH);
 const generatePartyCode = customAlphabet(PARTY_CODE_ALPHABET, PARTY_CODE_LENGTH);
 // ─── State ───
@@ -670,21 +672,21 @@ export function startServer() {
                     type: "member-status",
                     payload: { username: entry.username, status: "executing" },
                 });
-                // Greenlit → auto-trigger execution simulation
-                // Note: We bypass original Greenlight here, so we stub an EvaluationResult
-                const fakeResult = {
+                // Extract scope from prompt to identify affected files
+                const scope = await extractScope(entry.content, projectRoot);
+                const evaluationResult = {
                     verdict: "greenlit",
                     reasoning: "Prompt securely recorded in project memory.",
                     conflicts: [],
-                    affectedFiles: [],
+                    affectedFiles: scope.affectedFiles,
                     executionHints: {
-                        estimatedComplexity: "simple",
+                        estimatedComplexity: scope.complexity,
                         requiresBuild: false,
                         requiresTests: false,
-                        relatedContextFiles: []
-                    }
+                        relatedContextFiles: [],
+                    },
                 };
-                enqueueExecution(party, entry, fakeResult);
+                enqueueExecution(party, entry, evaluationResult);
             }
             catch (err) {
                 const errorMessage = err instanceof Error
@@ -765,6 +767,31 @@ function drainPendingExecutions() {
  * Does not throw; errors are sent to the submitter.
  */
 async function runExecutionFlow(party, entry, evaluation) {
+    if (isLocalMode()) {
+        handleExecutionEvent(party, entry, {
+            type: "stage",
+            stage: "Agent is working...",
+        });
+        const result = await executePromptChanges(entry, party.code, log);
+        if (result.success) {
+            handleExecutionEvent(party, entry, {
+                type: "complete",
+                result: {
+                    promptId: entry.promptId,
+                    files: result.files,
+                    summary: result.summary,
+                },
+            });
+        }
+        else {
+            handleExecutionEvent(party, entry, {
+                type: "error",
+                message: result.summary,
+                recoverable: false,
+            });
+        }
+        return;
+    }
     const orchestrator = orchestrators.get(party.code);
     if (!orchestrator) {
         party.sendTo(entry.connectionId, {

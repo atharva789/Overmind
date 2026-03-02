@@ -63,10 +63,15 @@ export interface FileChange {
 // Global state for tracked changes during an execution session
 export class WorkspaceContext {
     public changes: FileChange[] = [];
+    private projectRoot: string;
+
+    constructor(projectRoot?: string) {
+        this.projectRoot = projectRoot ?? process.cwd();
+    }
 
     executeTool(name: string, args: Record<string, string>): { success: boolean, result?: string, error?: string } {
         try {
-            const cwd = process.cwd();
+            const cwd = this.projectRoot;
             switch (name) {
                 case "read_file": {
                     const p = path.resolve(cwd, args.path!);

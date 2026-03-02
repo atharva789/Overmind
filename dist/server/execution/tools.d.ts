@@ -8,6 +8,8 @@ export interface FileChange {
 }
 export declare class WorkspaceContext {
     changes: FileChange[];
+    private projectRoot;
+    constructor(projectRoot?: string);
     executeTool(name: string, args: Record<string, string>): {
         success: boolean;
         result?: string;

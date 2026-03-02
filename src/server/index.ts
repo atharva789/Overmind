@@ -31,6 +31,8 @@ import { Orchestrator, type ExecutionEvent } from "./orchestrator/index.js";
 import { initDb, pool } from "./db.js";
 import { checkAndRunStoryAgent } from "./story/agent.js";
 import { solveMergeConflicts } from "./merge/index.js";
+import { extractScope } from "./execution/scope.js";
+import { executePromptChanges } from "./execution/agent.js";
 
 const generateConnectionId = customAlphabet(
     "abcdefghijklmnopqrstuvwxyz0123456789",
@@ -820,21 +822,21 @@ export function startServer(): WebSocketServer {
                     payload: { username: entry.username, status: "executing" },
                 });
 
-                // Greenlit → auto-trigger execution simulation
-                // Note: We bypass original Greenlight here, so we stub an EvaluationResult
-                const fakeResult: EvaluationResult = {
+                // Extract scope from prompt to identify affected files
+                const scope = await extractScope(entry.content, projectRoot);
+                const evaluationResult: EvaluationResult = {
                     verdict: "greenlit",
                     reasoning: "Prompt securely recorded in project memory.",
                     conflicts: [],
-                    affectedFiles: [],
+                    affectedFiles: scope.affectedFiles,
                     executionHints: {
-                        estimatedComplexity: "simple",
+                        estimatedComplexity: scope.complexity,
                         requiresBuild: false,
                         requiresTests: false,
-                        relatedContextFiles: []
-                    }
+                        relatedContextFiles: [],
+                    },
                 };
-                enqueueExecution(party, entry, fakeResult);
+                enqueueExecution(party, entry, evaluationResult);
             } catch (err) {
                 const errorMessage = err instanceof Error
                     ? err.message
@@ -942,6 +944,33 @@ async function runExecutionFlow(
     entry: PromptEntry,
     evaluation: EvaluationResult
 ): Promise<void> {
+    if (isLocalMode()) {
+        handleExecutionEvent(party, entry, {
+            type: "stage",
+            stage: "Agent is working...",
+        });
+
+        const result = await executePromptChanges(entry, party.code, log);
+
+        if (result.success) {
+            handleExecutionEvent(party, entry, {
+                type: "complete",
+                result: {
+                    promptId: entry.promptId,
+                    files: result.files,
+                    summary: result.summary,
+                },
+            });
+        } else {
+            handleExecutionEvent(party, entry, {
+                type: "error",
+                message: result.summary,
+                recoverable: false,
+            });
+        }
+        return;
+    }
+
     const orchestrator = orchestrators.get(party.code);
     if (!orchestrator) {
         party.sendTo(entry.connectionId, {

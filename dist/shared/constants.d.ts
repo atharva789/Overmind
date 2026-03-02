@@ -32,7 +32,7 @@ export declare const MINUTE_MS: number;
 export declare const RECONNECT_INITIAL_MS = 1000;
 export declare const RECONNECT_MAX_MS = 10000;
 export declare const GREENLIGHT_BACKEND_DEFAULT = "gemini";
-export declare const GEMINI_MODEL_DEFAULT = "gemini-3-flash-preview";
+export declare const GEMINI_MODEL_DEFAULT = "gemini-2.5-pro";
 export declare const GLM_MODEL_DEFAULT = "glm-5.0";
 export declare const MAX_TOOL_ROUNDS = 5;
 export declare const EVAL_TIMEOUT_MS = 30000;

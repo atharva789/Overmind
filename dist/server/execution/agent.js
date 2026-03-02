@@ -1,18 +1,50 @@
 import { GoogleGenAI } from "@google/genai";
+import fs from "node:fs";
+import path from "node:path";
 import { EXECUTION_TOOL_DECLARATIONS, WorkspaceContext } from "./tools.js";
 import { GEMINI_MODEL_DEFAULT } from "../../shared/constants.js";
-// Hardcoded larger limit for execution tasks
-const MAX_EXECUTION_ROUNDS = 10;
-const EXECUTION_TIMEOUT_MS = 60000;
+const MAX_EXECUTION_ROUNDS = 25;
+const EXECUTION_TIMEOUT_MS = 120000;
+const MAX_FILE_SIZE = 50000;
+const EXCLUDED_DIRS = new Set(["node_modules", ".git", "dist", ".overmind", "modal-bridge"]);
+function collectProjectFiles(dir, relative, depth) {
+    const result = {};
+    if (depth > 4)
+        return result;
+    let entries;
+    try {
+        entries = fs.readdirSync(path.join(dir, relative), { withFileTypes: true });
+    }
+    catch {
+        return result;
+    }
+    for (const entry of entries) {
+        const rel = relative ? `${relative}/${entry.name}` : entry.name;
+        if (entry.isDirectory()) {
+            if (EXCLUDED_DIRS.has(entry.name))
+                continue;
+            Object.assign(result, collectProjectFiles(dir, rel, depth + 1));
+        }
+        else if (entry.isFile()) {
+            try {
+                const content = fs.readFileSync(path.join(dir, rel), "utf-8");
+                if (content.length <= MAX_FILE_SIZE) {
+                    result[rel] = content;
+                }
+            }
+            catch { /* skip unreadable */ }
+        }
+    }
+    return result;
+}
 function buildSystemPrompt() {
-    return `You are the Overmind Execution Agent. Your job is to fulfill the user's coding request by modifying files in the current project directory.
-    
-1. You have tools to \`read_file\`, \`write_file\`, and \`list_dir\`.
-2. First, use \`list_dir\` and \`read_file\` to understand the context and locate where changes should be made.
-3. Once you know what to do, use \`write_file\` to save your changes. If you are modifying an existing file, you MUST overwrite it completely with the full new content (no partial patching).
-4. After applying all changes, call \`finish_execution\` with a short summary of what you did.
+    return `You are the Overmind Execution Agent. Fulfill the user's coding request by modifying project files.
 
-If you cannot fulfill the prompt due to missing context or errors, call \`finish_execution\` explaining why it failed. Do NOT wrap your summary in markdown. Return plain text summaries.`;
+RULES:
+- The user message contains ALL project files already. Do NOT call read_file or list_dir — you have everything.
+- Use write_file to save changes. You MUST write the COMPLETE file content (full overwrite, not a patch).
+- After writing all files, call finish_execution with a plain text summary.
+- Be direct. Do not explain what you will do — just do it.`;
 }
 export async function executePromptChanges(entry, partyCode, log) {
     const apiKey = process.env["GEMINI_API_KEY"];
@@ -21,9 +53,14 @@ export async function executePromptChanges(entry, partyCode, log) {
     }
     const modelName = process.env["OVERMIND_MODEL"] ?? GEMINI_MODEL_DEFAULT;
     const ai = new GoogleGenAI({ apiKey });
+    const projectRoot = process.env["OVERMIND_PROJECT_ROOT"] ?? process.cwd();
+    const projectFiles = collectProjectFiles(projectRoot, "", 0);
+    const fileContents = Object.entries(projectFiles)
+        .map(([p, c]) => `=== ${p} ===\n${c}`)
+        .join("\n\n");
     const systemPrompt = buildSystemPrompt();
-    const userMessage = `User Request:\n"${entry.content}"\n\nScope hint: ${entry.scope?.join(", ") ?? "unscoped"}`;
-    const context = new WorkspaceContext();
+    const userMessage = `User Request:\n"${entry.content}"\n\nScope hint: ${entry.scope?.join(", ") ?? "unscoped"}\n\n--- PROJECT FILES ---\n${fileContents}`;
+    const context = new WorkspaceContext(projectRoot);
     try {
         const chat = ai.chats.create({
             model: modelName,

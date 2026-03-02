@@ -53,9 +53,13 @@ export const EXECUTION_TOOL_DECLARATIONS = [
 // Global state for tracked changes during an execution session
 export class WorkspaceContext {
     changes = [];
+    projectRoot;
+    constructor(projectRoot) {
+        this.projectRoot = projectRoot ?? process.cwd();
+    }
     executeTool(name, args) {
         try {
-            const cwd = process.cwd();
+            const cwd = this.projectRoot;
             switch (name) {
                 case "read_file": {
                     const p = path.resolve(cwd, args.path);

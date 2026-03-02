@@ -6,8 +6,12 @@
     "overmind": "dist/cli.js",
     "overmind-deploy": "tools/modal-deploy.sh"
   },
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "build": "tsc",
+    "prepare": "npm run build",
     "dev": "tsx --watch src/cli.ts",
     "start": "node dist/cli.js"
   },
