@@ -7,7 +7,9 @@ Invariants: Handlers never generate edits; workers produce all file updates.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import math
 import os
 import re
 import traceback
@@ -49,6 +51,9 @@ app = modal.App(APP_NAME)
 run_store = modal.Dict.from_name(RUN_STORE_NAME, create_if_missing=True)
 web_app = FastAPI()
 
+# asyncpg connection pool; populated lazily on first DB-touching request.
+db_pool: Any = None
+
 
 class RunCreateRequest(BaseModel):
     runId: str
@@ -86,6 +91,18 @@ class RunStatusRecord(BaseModel):
     summary: Optional[str] = None
     error: Optional[str] = None
     updatedAt: str
+
+
+class InitializeCodebaseRequest(BaseModel):
+    projectId: str
+    branchName: str = "main"
+    files: dict[str, str]  # path → content
+
+
+class InitializeCodebaseResponse(BaseModel):
+    resolvedProjectId: str
+    branchId: str
+    chunksStored: int
 
 
 def now_iso() -> str:
@@ -549,6 +566,261 @@ async def cancel_run(run_id: str) -> dict[str, object]:
         },
     )
     return {"ok": True}
+
+
+def chunk_file(path: str, content: str, chunk_size: int = 50) -> list[dict]:
+    """
+    Split a file's content into chunks of `chunk_size` lines.
+    Does not include chunks that are purely whitespace.
+    Edge cases: empty files produce no chunks; partial trailing groups are included.
+    """
+    lines = content.split("\n")
+    chunks: list[dict] = []
+    for i in range(0, len(lines), chunk_size):
+        group = lines[i : i + chunk_size]
+        chunk_text = "\n".join(group)
+        if not chunk_text.strip():
+            continue
+        start_line = i + 1  # 1-indexed
+        end_line = i + len(group)
+        chunk_name = f"{path}:{start_line}"
+        chunks.append(
+            {
+                "path": path,
+                "chunk_name": chunk_name,
+                "chunk_text": chunk_text,
+                "start_line": start_line,
+                "end_line": end_line,
+            }
+        )
+    return chunks
+
+
+def average_vectors(vectors: list[list[float]]) -> list[float]:
+    """
+    Compute element-wise average of a list of float vectors.
+    Does not mutate inputs.
+    Edge cases: raises ValueError if vectors is empty or vectors have different lengths.
+    """
+    if not vectors:
+        raise ValueError("average_vectors: empty list")
+    dim = len(vectors[0])
+    total = [0.0] * dim
+    for vec in vectors:
+        for j, v in enumerate(vec):
+            total[j] += v
+    n = len(vectors)
+    return [x / n for x in total]
+
+
+def cosine_similarity(a: list[float], b: list[float]) -> float:
+    """
+    Compute cosine similarity between two vectors.
+    Does not mutate inputs.
+    Edge cases: returns 0.0 if either vector has zero magnitude.
+    """
+    dot = sum(x * y for x, y in zip(a, b))
+    mag_a = math.sqrt(sum(x * x for x in a))
+    mag_b = math.sqrt(sum(x * x for x in b))
+    if mag_a == 0.0 or mag_b == 0.0:
+        return 0.0
+    return dot / (mag_a * mag_b)
+
+
+async def _generate_embedding(text: str) -> list[float]:
+    """
+    Generate a text embedding via the LocalEmbedder Modal class.
+    Does not cache results.
+    Edge cases: raises on Modal/GPU errors; callers should wrap in try/except.
+    """
+    try:
+        from modal import Cls
+        LocalEmbedder = Cls.from_name(APP_NAME, "LocalEmbedder")
+        embedder = LocalEmbedder()
+        result = await embedder.embed.aio(text)
+        return result
+    except Exception:
+        raise
+
+
+@web_app.post("/initialize_codebase")
+async def initialize_codebase(req: InitializeCodebaseRequest) -> InitializeCodebaseResponse:
+    """
+    Chunk and embed all files for a project, then store them in the DB.
+
+    What it does:
+      - Splits each file into 50-line chunks.
+      - Generates embeddings for each chunk via LocalEmbedder.
+      - Computes a centroid for the new project and checks for an existing
+        project with cosine similarity > 0.97; if found, reuses that project_id.
+      - Upserts a branch record and inserts code_chunks rows (ON CONFLICT DO NOTHING).
+
+    What it does NOT do:
+      - It does not delete old chunks; re-runs only add new ones.
+      - It does not validate that file paths are safe or within a repo root.
+      - It does not de-duplicate chunks within a single request.
+
+    Edge cases:
+      - If the embedding service is unavailable, returns 503.
+      - If the DB is unavailable (db_pool is None), returns 503.
+      - If a project with very similar embeddings already exists, the returned
+        resolvedProjectId will differ from req.projectId.
+      - Empty or whitespace-only files produce zero chunks and are skipped.
+    """
+    global db_pool
+
+    log(
+        f"initialize_codebase: projectId={req.projectId} "
+        f"branch={req.branchName} files={len(req.files)}"
+    )
+
+    # Step 1 — Guard: DB required
+    if db_pool is None:
+        raise HTTPException(status_code=503, detail="database not connected")
+
+    # Step 2 — Chunk all files
+    all_chunks: list[dict] = []
+    file_hashes: dict[str, str] = {}
+    for path, content in req.files.items():
+        file_hashes[path] = hashlib.md5(content.encode()).hexdigest()
+        all_chunks.extend(chunk_file(path, content))
+
+    if not all_chunks:
+        # Nothing to embed; still upsert branch and return.
+        try:
+            async with db_pool.acquire() as conn:
+                async with conn.transaction():
+                    row = await conn.fetchrow(
+                        """
+                        INSERT INTO branches (name, project_id)
+                        VALUES ($1, $2)
+                        ON CONFLICT (project_id, name) DO UPDATE SET name = EXCLUDED.name
+                        RETURNING branch_id
+                        """,
+                        req.branchName,
+                        req.projectId,
+                    )
+            return InitializeCodebaseResponse(
+                resolvedProjectId=req.projectId,
+                branchId=str(row["branch_id"]),
+                chunksStored=0,
+            )
+        except Exception as exc:
+            log(f"initialize_codebase: DB error (no chunks path): {exc}")
+            raise HTTPException(status_code=500, detail="database error")
+
+    # Step 3 — Generate embeddings for all chunks
+    embeddings: list[list[float]] = []
+    try:
+        for chunk in all_chunks:
+            emb = await _generate_embedding(chunk["chunk_text"])
+            embeddings.append(emb)
+    except Exception as exc:
+        log(f"initialize_codebase: embedding error: {exc}")
+        raise HTTPException(status_code=503, detail="embedding service unavailable")
+
+    # Step 4 — Compute centroid of new project's embeddings
+    new_centroid = average_vectors(embeddings)
+
+    # Step 5 — Check for similar existing project
+    resolved_project_id = req.projectId
+    try:
+        async with db_pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT project_id, embedding FROM code_chunks WHERE project_id != $1 LIMIT 500",
+                req.projectId,
+            )
+    except Exception as exc:
+        log(f"initialize_codebase: DB similarity query error: {exc}")
+        raise HTTPException(status_code=500, detail="database error")
+
+    if rows:
+        # Group embeddings by project_id
+        project_embeddings: dict[str, list[list[float]]] = {}
+        for row in rows:
+            pid = row["project_id"]
+            raw_emb = row["embedding"]
+            # asyncpg returns pgvector as a string like "[0.1,0.2,...]"
+            if isinstance(raw_emb, str):
+                parsed_emb = [float(x) for x in raw_emb.strip("[]").split(",")]
+            else:
+                parsed_emb = list(raw_emb)
+            project_embeddings.setdefault(pid, []).append(parsed_emb)
+
+        best_sim = 0.0
+        best_pid = None
+        for pid, vecs in project_embeddings.items():
+            try:
+                centroid = average_vectors(vecs)
+                sim = cosine_similarity(new_centroid, centroid)
+                if sim > best_sim:
+                    best_sim = sim
+                    best_pid = pid
+            except Exception:
+                continue
+
+        SIMILARITY_THRESHOLD = 0.97
+        if best_pid is not None and best_sim > SIMILARITY_THRESHOLD:
+            resolved_project_id = best_pid
+            log(
+                f"initialize_codebase: resolving projectId={req.projectId} "
+                f"→ existing={resolved_project_id} similarity={best_sim:.4f}"
+            )
+
+    # Step 6 — Upsert or find branch record
+    # Step 7 — Upsert code chunks (in one transaction)
+    chunks_stored_count = 0
+    try:
+        async with db_pool.acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    """
+                    INSERT INTO branches (name, project_id)
+                    VALUES ($1, $2)
+                    ON CONFLICT (project_id, name) DO UPDATE SET name = EXCLUDED.name
+                    RETURNING branch_id
+                    """,
+                    req.branchName,
+                    resolved_project_id,
+                )
+                branch_id = row["branch_id"]
+
+                for chunk, embedding in zip(all_chunks, embeddings):
+                    emb_str = "[" + ",".join(str(x) for x in embedding) + "]"
+                    file_hash = file_hashes[chunk["path"]]
+                    result = await conn.execute(
+                        """
+                        INSERT INTO code_chunks
+                            (project_id, branch_id, file_path, file_hash,
+                             chunk_text, chunk_name, start_line, end_line, embedding)
+                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::vector)
+                        ON CONFLICT DO NOTHING
+                        """,
+                        resolved_project_id,
+                        branch_id,
+                        chunk["path"],
+                        file_hash,
+                        chunk["chunk_text"],
+                        chunk["chunk_name"],
+                        chunk["start_line"],
+                        chunk["end_line"],
+                        emb_str,
+                    )
+                    # asyncpg returns "INSERT 0 N" string; count inserted rows
+                    if result and result.startswith("INSERT"):
+                        parts = result.split()
+                        if len(parts) >= 3:
+                            chunks_stored_count += int(parts[2])
+    except Exception as exc:
+        log(f"initialize_codebase: DB upsert error: {exc}")
+        raise HTTPException(status_code=500, detail="database error")
+
+    # Step 8 — Return response
+    return InitializeCodebaseResponse(
+        resolvedProjectId=resolved_project_id,
+        branchId=str(branch_id),
+        chunksStored=chunks_stored_count,
+    )
 
 
 @app.function(
