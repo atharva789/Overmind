@@ -40,6 +40,9 @@ let _pool: pg.Pool | null = null;
 export function getPool(): pg.Pool {
     if (!_pool) {
         const url = process.env.OVERMIND_DATABASE_URL ?? "";
+        if (!url) {
+            console.warn("[db] OVERMIND_DATABASE_URL is not set; DB operations will fail.");
+        }
         _pool = new pg.Pool({
             connectionString: url,
             ssl: { rejectUnauthorized: false },
@@ -56,8 +59,9 @@ export const pool: pg.Pool = new Proxy({} as pg.Pool, {
 });
 
 export async function initDb() {
+    const db = getPool();
     try {
-        await getPool().query(`
+        await db.query(`
             CREATE TABLE IF NOT EXISTS features (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 title TEXT NOT NULL,
@@ -67,7 +71,7 @@ export async function initDb() {
             );
         `);
 
-        await getPool().query(`
+        await db.query(`
             CREATE TABLE IF NOT EXISTS queries (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 content TEXT NOT NULL,
@@ -79,8 +83,8 @@ export async function initDb() {
         `);
 
         // branches must be created before code_chunks so the FK reference
-        // in code_chunks.branch_id is resolvable at index-creation time.
-        await getPool().query(`
+        // in code_chunks.branch_id is resolvable at column-addition time.
+        await db.query(`
             CREATE TABLE IF NOT EXISTS branches (
                 branch_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 name TEXT NOT NULL,
@@ -90,7 +94,7 @@ export async function initDb() {
             );
         `);
 
-        await getPool().query(`
+        await db.query(`
             CREATE TABLE IF NOT EXISTS code_chunks (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 project_id TEXT NOT NULL,
@@ -104,20 +108,22 @@ export async function initDb() {
 
         // Add branch_id as a nullable FK column so existing rows are
         // preserved without modification.
-        await getPool().query(`
+        // ON DELETE CASCADE is intentional: chunks belong to a branch, so
+        // when a branch is deleted its chunks are deleted along with it.
+        await db.query(`
             ALTER TABLE code_chunks
                 ADD COLUMN IF NOT EXISTS branch_id UUID
                     REFERENCES branches(branch_id) ON DELETE CASCADE;
         `);
 
-        await getPool().query(`
+        await db.query(`
             CREATE INDEX IF NOT EXISTS code_chunks_branch_id_idx
                 ON code_chunks (branch_id);
         `);
 
-        console.log("[db] Supabase schema initialized successfully.");
+        console.log(`[db] ${new Date().toISOString()} Supabase schema initialized successfully.`);
     } catch (err) {
-        console.error("[db] Failed to initialize schema:", err);
+        console.error(`[db] ${new Date().toISOString()} Failed to initialize schema:`, err);
         throw err;
     }
 }
