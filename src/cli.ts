@@ -1,6 +1,15 @@
 #!/usr/bin/env node
 
+/**
+ * Purpose: CLI entry point for the Overmind multiplayer coding agent.
+ * High-level behavior: Registers host and join commands; host starts the
+ *   WebSocket server, join connects to an existing session.
+ * Assumptions: Node.js 20+, running from a git-tracked project directory.
+ * Invariants: The join command never initializes local project state.
+ */
+
 import { config } from "dotenv";
+import { execSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
@@ -55,7 +64,7 @@ program
         const projectId = deriveProjectId(projectRoot);
 
         // Persist project record and kick off codebase indexing (host only)
-        const record = loadOrCreateProjectRecord(projectId);
+        const record = loadOrCreateProjectRecord(projectId, getCurrentBranch(projectRoot));
         console.log(
             `[host] ${new Date().toISOString()} Project: ${projectId} (branch: ${record.branchName})`
         );
@@ -243,6 +252,17 @@ program
 program.parse();
 
 // ─── Helpers ───
+
+function getCurrentBranch(projectRoot: string): string {
+    try {
+        return execSync("git rev-parse --abbrev-ref HEAD", {
+            cwd: projectRoot,
+            stdio: ["ignore", "pipe", "ignore"],
+        }).toString().trim();
+    } catch {
+        return "main";
+    }
+}
 
 function getDefaultUsername(): string {
     try {

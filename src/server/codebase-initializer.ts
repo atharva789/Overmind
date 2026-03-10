@@ -84,7 +84,10 @@ export async function initializeCodebase(
     branchName: string,
 ): Promise<InitializeCodebaseResult | null> {
     const orchestratorUrl = get_OVERMIND_ORCHESTRATOR_URL();
-    if (!orchestratorUrl) return null;
+    if (!orchestratorUrl) {
+        console.log(`[codebase-init] ${new Date().toISOString()} OVERMIND_ORCHESTRATOR_URL not set; skipping codebase indexing.`);
+        return null;
+    }
 
     let files: Record<string, string>;
     try {
