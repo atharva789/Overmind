@@ -21,6 +21,8 @@ import { decodeInviteCode, encodeInviteCode, isInviteCode } from "./shared/invit
 import App from "./client/ui/App.js";
 import clipboardy from "clipboardy";
 import { deriveProjectId } from "./shared/project-id.js";
+import { loadOrCreateProjectRecord } from "./server/project-store.js";
+import { initializeCodebase } from "./server/codebase-initializer.js";
 import { pool } from "./server/db.js";
 import { generateInitialStory } from "./server/story/agent.js";
 import { GoogleGenAI } from "@google/genai";
@@ -51,6 +53,19 @@ program
 
         const projectRoot = process.env["OVERMIND_PROJECT_ROOT"] ?? process.cwd();
         const projectId = deriveProjectId(projectRoot);
+
+        // Persist project record and kick off codebase indexing (host only)
+        const record = loadOrCreateProjectRecord(projectId);
+        console.log(
+            `[host] ${new Date().toISOString()} Project: ${projectId} (branch: ${record.branchName})`
+        );
+        initializeCodebase(projectRoot, projectId, record.branchName).then((result) => {
+            if (result) {
+                console.log(
+                    `[host] ${new Date().toISOString()} Codebase indexed: ${result.chunksStored} chunks, resolvedProjectId=${result.resolvedProjectId}`
+                );
+            }
+        }).catch(() => {}); // errors already logged inside initializeCodebase
 
         // --- Core Features Setup Wizard ---
         try {
