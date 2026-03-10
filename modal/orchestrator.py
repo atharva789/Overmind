@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
 import os
 import re
 import traceback
@@ -21,6 +20,11 @@ import modal
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
+from codebase_indexer import (
+    chunk_file, average_vectors, cosine_similarity,
+    InitializeCodebaseRequest, InitializeCodebaseResponse,
+)
+
 APP_NAME = "overmind-orchestrator"
 RUN_STORE_NAME = "overmind-orchestrator-runs"
 DEFAULT_LLM_URL = "https://atharva789--overmind-llm-llmserver-serve.modal.run"
@@ -31,6 +35,7 @@ LOG_TRUNCATE_CHARS = 1000
 MAX_AGENT_ROUNDS = 10
 MAX_PARSE_RETRIES = 2
 LLM_SECRET_NAME = "overmind-llm-auth"
+SIMILARITY_THRESHOLD = 0.97
 
 STAGE_SPAWNING = "Spawning sandbox..."
 STAGE_WORKING = "Agent is working..."
@@ -91,18 +96,6 @@ class RunStatusRecord(BaseModel):
     summary: Optional[str] = None
     error: Optional[str] = None
     updatedAt: str
-
-
-class InitializeCodebaseRequest(BaseModel):
-    projectId: str
-    branchName: str = "main"
-    files: dict[str, str]  # path → content
-
-
-class InitializeCodebaseResponse(BaseModel):
-    resolvedProjectId: str
-    branchId: str
-    chunksStored: int
 
 
 def now_iso() -> str:
@@ -568,79 +561,17 @@ async def cancel_run(run_id: str) -> dict[str, object]:
     return {"ok": True}
 
 
-def chunk_file(path: str, content: str, chunk_size: int = 50) -> list[dict]:
-    """
-    Split a file's content into chunks of `chunk_size` lines.
-    Does not include chunks that are purely whitespace.
-    Edge cases: empty files produce no chunks; partial trailing groups are included.
-    """
-    lines = content.split("\n")
-    chunks: list[dict] = []
-    for i in range(0, len(lines), chunk_size):
-        group = lines[i : i + chunk_size]
-        chunk_text = "\n".join(group)
-        if not chunk_text.strip():
-            continue
-        start_line = i + 1  # 1-indexed
-        end_line = i + len(group)
-        chunk_name = f"{path}:{start_line}"
-        chunks.append(
-            {
-                "path": path,
-                "chunk_name": chunk_name,
-                "chunk_text": chunk_text,
-                "start_line": start_line,
-                "end_line": end_line,
-            }
-        )
-    return chunks
-
-
-def average_vectors(vectors: list[list[float]]) -> list[float]:
-    """
-    Compute element-wise average of a list of float vectors.
-    Does not mutate inputs.
-    Edge cases: raises ValueError if vectors is empty or vectors have different lengths.
-    """
-    if not vectors:
-        raise ValueError("average_vectors: empty list")
-    dim = len(vectors[0])
-    total = [0.0] * dim
-    for vec in vectors:
-        for j, v in enumerate(vec):
-            total[j] += v
-    n = len(vectors)
-    return [x / n for x in total]
-
-
-def cosine_similarity(a: list[float], b: list[float]) -> float:
-    """
-    Compute cosine similarity between two vectors.
-    Does not mutate inputs.
-    Edge cases: returns 0.0 if either vector has zero magnitude.
-    """
-    dot = sum(x * y for x, y in zip(a, b))
-    mag_a = math.sqrt(sum(x * x for x in a))
-    mag_b = math.sqrt(sum(x * x for x in b))
-    if mag_a == 0.0 or mag_b == 0.0:
-        return 0.0
-    return dot / (mag_a * mag_b)
-
-
 async def _generate_embedding(text: str) -> list[float]:
     """
     Generate a text embedding via the LocalEmbedder Modal class.
     Does not cache results.
     Edge cases: raises on Modal/GPU errors; callers should wrap in try/except.
     """
-    try:
-        from modal import Cls
-        LocalEmbedder = Cls.from_name(APP_NAME, "LocalEmbedder")
-        embedder = LocalEmbedder()
-        result = await embedder.embed.aio(text)
-        return result
-    except Exception:
-        raise
+    from modal import Cls
+    LocalEmbedder = Cls.from_name(APP_NAME, "LocalEmbedder")
+    embedder = LocalEmbedder()
+    result = await embedder.embed.aio(text)
+    return result
 
 
 @web_app.post("/initialize_codebase")
@@ -727,7 +658,15 @@ async def initialize_codebase(req: InitializeCodebaseRequest) -> InitializeCodeb
     try:
         async with db_pool.acquire() as conn:
             rows = await conn.fetch(
-                "SELECT project_id, embedding FROM code_chunks WHERE project_id != $1 LIMIT 500",
+                """
+                SELECT project_id, embedding FROM (
+                    SELECT project_id, embedding,
+                           ROW_NUMBER() OVER (PARTITION BY project_id ORDER BY created_at DESC) AS rn
+                    FROM code_chunks
+                    WHERE project_id != $1
+                ) sub WHERE rn <= 10
+                LIMIT 1000
+                """,
                 req.projectId,
             )
     except Exception as exc:
@@ -756,10 +695,10 @@ async def initialize_codebase(req: InitializeCodebaseRequest) -> InitializeCodeb
                 if sim > best_sim:
                     best_sim = sim
                     best_pid = pid
-            except Exception:
+            except Exception as exc:
+                log(f"initialize_codebase: centroid error for pid={pid}: {exc}")
                 continue
 
-        SIMILARITY_THRESHOLD = 0.97
         if best_pid is not None and best_sim > SIMILARITY_THRESHOLD:
             resolved_project_id = best_pid
             log(
