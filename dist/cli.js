@@ -1,5 +1,13 @@
 #!/usr/bin/env node
+/**
+ * Purpose: CLI entry point for the Overmind multiplayer coding agent.
+ * High-level behavior: Registers host and join commands; host starts the
+ *   WebSocket server, join connects to an existing session.
+ * Assumptions: Node.js 20+, running from a git-tracked project directory.
+ * Invariants: The join command never initializes local project state.
+ */
 import { config } from "dotenv";
+import { execSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 // Load .env from the Overmind installation directory, not CWD
@@ -18,6 +26,8 @@ import { decodeInviteCode, encodeInviteCode, isInviteCode } from "./shared/invit
 import App from "./client/ui/App.js";
 import clipboardy from "clipboardy";
 import { deriveProjectId } from "./shared/project-id.js";
+import { loadOrCreateProjectRecord } from "./server/project-store.js";
+import { initializeCodebase } from "./server/codebase-initializer.js";
 import { pool } from "./server/db.js";
 import { generateInitialStory } from "./server/story/agent.js";
 import { GoogleGenAI } from "@google/genai";
@@ -43,6 +53,16 @@ program
     process.env["OVERMIND_PORT"] = String(port);
     const projectRoot = process.env["OVERMIND_PROJECT_ROOT"] ?? process.cwd();
     const projectId = deriveProjectId(projectRoot);
+    // Persist project record and kick off codebase indexing (host only)
+    const record = loadOrCreateProjectRecord(projectId, getCurrentBranch(projectRoot));
+    console.log(`[host] ${new Date().toISOString()} Project: ${projectId} (branch: ${record.branchName})`);
+    initializeCodebase(projectRoot, projectId, record.branchName).then((result) => {
+        if (result) {
+            console.log(`[host] ${new Date().toISOString()} Codebase indexed: ${result.chunksStored} chunks, resolvedProjectId=${result.resolvedProjectId}`);
+        }
+    }).catch((err) => {
+        console.error(`[host] ${new Date().toISOString()} initializeCodebase unexpectedly threw:`, err);
+    });
     // --- Core Features Setup Wizard ---
     try {
         const { rows } = (await pool.query("SELECT COUNT(*) as count FROM features WHERE project_id = $1", [projectId]));
@@ -197,6 +217,17 @@ program
 });
 program.parse();
 // ─── Helpers ───
+function getCurrentBranch(projectRoot) {
+    try {
+        return execSync("git rev-parse --abbrev-ref HEAD", {
+            cwd: projectRoot,
+            stdio: ["ignore", "pipe", "ignore"],
+        }).toString().trim();
+    }
+    catch {
+        return "main";
+    }
+}
 function getDefaultUsername() {
     try {
         return os.userInfo().username;

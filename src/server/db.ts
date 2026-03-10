@@ -98,27 +98,26 @@ export async function initDb() {
             CREATE TABLE IF NOT EXISTS code_chunks (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 project_id TEXT NOT NULL,
+                branch_id UUID REFERENCES branches(branch_id) ON DELETE CASCADE,
                 file_path TEXT NOT NULL,
-                chunk_index INTEGER NOT NULL,
-                content TEXT NOT NULL,
+                file_hash TEXT NOT NULL,
+                chunk_text TEXT NOT NULL,
+                chunk_name TEXT,
+                start_line INT,
+                end_line INT,
                 embedding VECTOR(1536),
                 created_at TIMESTAMPTZ DEFAULT NOW()
             );
         `);
 
-        // Add branch_id as a nullable FK column so existing rows are
-        // preserved without modification.
-        // ON DELETE CASCADE is intentional: chunks belong to a branch, so
-        // when a branch is deleted its chunks are deleted along with it.
-        await db.query(`
-            ALTER TABLE code_chunks
-                ADD COLUMN IF NOT EXISTS branch_id UUID
-                    REFERENCES branches(branch_id) ON DELETE CASCADE;
-        `);
-
         await db.query(`
             CREATE INDEX IF NOT EXISTS code_chunks_branch_id_idx
                 ON code_chunks (branch_id);
+        `);
+
+        await db.query(`
+            CREATE UNIQUE INDEX IF NOT EXISTS code_chunks_unique_chunk_idx
+                ON code_chunks (project_id, file_path, start_line);
         `);
 
         console.log(`[db] ${new Date().toISOString()} Supabase schema initialized successfully.`);

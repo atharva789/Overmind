@@ -56,10 +56,37 @@ LLM_SECRET_NAME = "overmind-llm-auth"
 image = modal.Image.debian_slim().pip_install(
     "fastapi",
     "httpx",
+    "asyncpg",
 )
 
 app = modal.App(APP_NAME)
-web_app = FastAPI()
+
+from contextlib import asynccontextmanager
+
+OVERMIND_DATABASE_URL = os.environ.get("OVERMIND_DATABASE_URL", "")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Initialize and tear down the asyncpg connection pool."""
+    global db_pool
+    if OVERMIND_DATABASE_URL:
+        log(f"lifespan: connecting to database...")
+        import asyncpg
+        db_pool = await asyncpg.create_pool(
+            dsn=OVERMIND_DATABASE_URL,
+            min_size=2,
+            max_size=10,
+            ssl="require",
+        )
+        log(f"lifespan: database pool ready.")
+    else:
+        log(f"lifespan: OVERMIND_DATABASE_URL not set, skipping DB pool.")
+    yield
+    if db_pool:
+        await db_pool.close()
+        log(f"lifespan: database pool closed.")
+
+web_app = FastAPI(lifespan=lifespan)
 
 # asyncpg connection pool; populated lazily on first DB-touching request.
 db_pool: Any = None
