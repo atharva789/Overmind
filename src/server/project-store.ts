@@ -29,8 +29,13 @@ export function loadOrCreateProjectRecord(
     const filePath = path.join(OVERMIND_PROJECTS_DIR, `${projectId}.json`);
 
     if (fs.existsSync(filePath)) {
-        const raw = fs.readFileSync(filePath, "utf-8");
-        return JSON.parse(raw) as ProjectRecord;
+        try {
+            const raw = fs.readFileSync(filePath, "utf-8");
+            return JSON.parse(raw) as ProjectRecord;
+        } catch (err) {
+            console.warn(`[project-store] ${new Date().toISOString()} Corrupted record at ${filePath}; recreating.`, err);
+            // Fall through to create a fresh record below
+        }
     }
 
     const record: ProjectRecord = {

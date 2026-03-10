@@ -74,7 +74,9 @@ program
                     `[host] ${new Date().toISOString()} Codebase indexed: ${result.chunksStored} chunks, resolvedProjectId=${result.resolvedProjectId}`
                 );
             }
-        }).catch(() => {}); // errors already logged inside initializeCodebase
+        }).catch((err) => {
+            console.error(`[host] ${new Date().toISOString()} initializeCodebase unexpectedly threw:`, err);
+        });
 
         // --- Core Features Setup Wizard ---
         try {
