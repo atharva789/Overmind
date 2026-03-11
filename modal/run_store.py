@@ -1,22 +1,24 @@
 """
-Purpose: Manage run lifecycle records in the Modal distributed dictionary.
+Purpose: Manage run lifecycle records with a swappable storage backend.
 High-level behavior: Provides typed read/write/update helpers for RunStatusRecord
-  objects stored in the Modal Dict, plus mark_* helpers for each terminal state.
-Assumptions: run_store is a module-level Modal Dict instance imported here.
-  Callers in orchestrator.py import the mark_* helpers directly.
+  objects. Backend is selected by RUN_STORE_BACKEND env var: "modal" (default)
+  uses Modal Dict; "memory" uses an in-process dict (suitable for AWS/local).
+Assumptions: "modal" backend requires Modal to be installed and authenticated.
+  "memory" backend loses state on process restart.
 Invariants: Every write refreshes updatedAt. Records are never deleted, only
   overwritten. Status transitions are enforced by callers, not this module.
 """
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import os
 from typing import Any, Optional
 
-import modal
 from pydantic import BaseModel
 
-RUN_STORE_NAME = "overmind-orchestrator-runs"
+from utils import now_iso
+
+# ─── Status / Stage constants ────────────────────────────────────────────────
 
 STATUS_QUEUED = "queued"
 STATUS_RUNNING = "running"
@@ -28,7 +30,7 @@ STAGE_SPAWNING = "Spawning sandbox..."
 STAGE_WORKING = "Agent is working..."
 STAGE_EXTRACTING = "Extracting changes..."
 
-run_store = modal.Dict.from_name(RUN_STORE_NAME, create_if_missing=True)
+# ─── Models ──────────────────────────────────────────────────────────────────
 
 
 class FileChange(BaseModel):
@@ -56,66 +58,105 @@ class RunStatusRecord(BaseModel):
     updatedAt: str
 
 
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+# ─── Backend implementations ─────────────────────────────────────────────────
+
+
+class _MemoryStore:
+    """In-process dict store. State is lost on restart. For AWS/local use."""
+
+    def __init__(self) -> None:
+        self._data: dict[str, Any] = {}
+
+    async def get(self, key: str) -> Any:
+        return self._data.get(key)
+
+    async def put(self, key: str, value: Any) -> None:
+        self._data[key] = value
+
+
+class _ModalStore:
+    """Modal Dict store. Persists across Modal function invocations."""
+
+    def __init__(self) -> None:
+        import modal
+        self._dict = modal.Dict.from_name(
+            "overmind-orchestrator-runs", create_if_missing=True
+        )
+
+    async def get(self, key: str) -> Any:
+        return await self._dict.get.aio(key)
+
+    async def put(self, key: str, value: Any) -> None:
+        await self._dict.put.aio(key, value)
+
+
+# Lazily initialized — avoids importing modal at module scope on non-Modal hosts.
+_store: "_MemoryStore | _ModalStore | None" = None
+
+
+def _get_store() -> "_MemoryStore | _ModalStore":
+    global _store
+    if _store is None:
+        backend = os.environ.get("RUN_STORE_BACKEND", "modal")
+        _store = _ModalStore() if backend == "modal" else _MemoryStore()
+    return _store
+
+
+# ─── Public helpers ───────────────────────────────────────────────────────────
 
 
 def run_record_to_dict(record: RunStatusRecord) -> dict[str, Any]:
     """
     Convert a RunStatusRecord to a plain dict, omitting None values.
     Does not mutate the input record.
-    Edge cases: Supports both Pydantic v1 and v2 APIs.
-    Invariants: Output is JSON-serializable with no null values.
+    Invariants: Output is JSON-serializable.
     """
-    if hasattr(record, "model_dump"):
-        return record.model_dump(exclude_none=True)
-    return {k: v for k, v in record.dict().items() if v is not None}
+    return record.model_dump(exclude_none=True)
+
+
+async def run_exists(run_id: str) -> bool:
+    """Return True if a run record exists in the store."""
+    return await _get_store().get(run_id) is not None
 
 
 async def read_run_record(run_id: str) -> RunStatusRecord:
     """
-    Load a run record from the Modal dictionary.
-    Does not create missing records.
-    Edge cases: Raises KeyError if run is missing.
+    Load a run record from the store.
+    Edge cases: Raises KeyError if run_id is missing.
     Invariants: Returned record is schema-validated.
     """
-    raw = await run_store.get.aio(run_id)
+    raw = await _get_store().get(run_id)
     if raw is None:
         raise KeyError(f"run not found: {run_id}")
-    if hasattr(RunStatusRecord, "model_validate"):
-        return RunStatusRecord.model_validate(raw)
-    return RunStatusRecord.parse_obj(raw)
+    return RunStatusRecord.model_validate(raw)
 
 
 async def write_run_record(run_id: str, record: RunStatusRecord) -> None:
     """
-    Persist a run record to the Modal dictionary.
-    Does not mutate the input record.
+    Persist a run record to the store.
     Edge cases: Overwrites any existing entry.
     Invariants: Stored records include updatedAt.
     """
-    await run_store.put.aio(run_id, run_record_to_dict(record))
+    await _get_store().put(run_id, run_record_to_dict(record))
 
 
 async def update_run_record(run_id: str, updates: dict[str, Any]) -> None:
     """
-    Update an existing run record with new fields.
-    Does not create records when missing.
-    Edge cases: Raises KeyError if run is missing.
+    Merge updates into an existing run record and persist.
+    Edge cases: Raises KeyError if run_id is missing.
     Invariants: updatedAt is always refreshed.
     """
     record = await read_run_record(run_id)
     data = run_record_to_dict(record)
     data.update(updates)
-    data["updatedAt"] = _now_iso()
+    data["updatedAt"] = now_iso()
     await write_run_record(run_id, RunStatusRecord(**data))
 
 
 async def should_cancel(run_id: str) -> bool:
     """
-    Determine if a run has been canceled.
-    Does not mutate run state.
-    Edge cases: Missing runs return False.
+    Return True if the run has been marked canceled.
+    Edge cases: Missing runs return False (not an error).
     Invariants: Canceled status is treated as terminal.
     """
     try:
@@ -125,72 +166,36 @@ async def should_cancel(run_id: str) -> bool:
     return record.status == STATUS_CANCELED
 
 
+# ─── State transition helpers ─────────────────────────────────────────────────
+
+
 async def mark_run_running(run_id: str) -> None:
-    """
-    Mark a run as running with the working stage.
-    Does not validate run existence.
-    Edge cases: Missing runs raise KeyError.
-    Invariants: Stage is set to STAGE_WORKING.
-    """
     await update_run_record(
         run_id,
-        {
-            "status": STATUS_RUNNING,
-            "stage": STAGE_WORKING,
-            "detail": None,
-            "error": None,
-        },
+        {"status": STATUS_RUNNING, "stage": STAGE_WORKING, "detail": None, "error": None},
     )
 
 
 async def mark_run_canceled(run_id: str, detail: str) -> None:
-    """
-    Mark a run as canceled with a detail message.
-    Does not terminate running workers.
-    Edge cases: Missing runs raise KeyError.
-    Invariants: Status is set to STATUS_CANCELED.
-    """
     await update_run_record(
-        run_id,
-        {
-            "status": STATUS_CANCELED,
-            "stage": None,
-            "detail": detail,
-        },
+        run_id, {"status": STATUS_CANCELED, "stage": None, "detail": detail}
     )
 
 
 async def mark_run_failed(run_id: str, stage: str, detail: str, error: str) -> None:
-    """
-    Mark a run as failed with detail and error.
-    Does not retry failed executions.
-    Edge cases: Missing runs raise KeyError.
-    Invariants: Status is set to STATUS_FAILED.
-    """
     await update_run_record(
         run_id,
-        {
-            "status": STATUS_FAILED,
-            "stage": stage,
-            "detail": detail,
-            "error": error,
-        },
+        {"status": STATUS_FAILED, "stage": stage, "detail": detail, "error": error},
     )
 
 
 async def mark_run_completed(run_id: str, result: AgentResult) -> None:
-    """
-    Mark a run as completed with extracted files and summary.
-    Does not mutate the AgentResult object.
-    Edge cases: Missing runs raise KeyError.
-    Invariants: Status is set to STATUS_COMPLETED.
-    """
     await update_run_record(
         run_id,
         {
             "status": STATUS_COMPLETED,
             "stage": STAGE_EXTRACTING,
-            "files": result.files,
+            "files": [f.model_dump() for f in result.files],
             "summary": result.summary,
         },
     )
