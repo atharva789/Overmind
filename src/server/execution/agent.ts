@@ -4,13 +4,12 @@ import fs from "node:fs";
 import path from "node:path";
 import type { PromptEntry } from "../party.js";
 import { EXECUTION_TOOL_DECLARATIONS, WorkspaceContext, FileChange } from "./tools.js";
-import { GEMINI_MODEL_DEFAULT } from "../../shared/constants.js";
+import { GEMINI_MODEL_DEFAULT, getProjectRoot } from "../../shared/constants.js";
+import { walkFiles } from "../orchestrator/file-sync.js";
 
 const MAX_EXECUTION_ROUNDS = 25;
 const EXECUTION_TIMEOUT_MS = 120000;
 const MAX_FILE_SIZE = 50000;
-
-const EXCLUDED_DIRS = new Set(["node_modules", ".git", "dist", ".overmind", "modal-bridge"]);
 
 export interface ExecutionResult {
     success: boolean;
@@ -20,25 +19,31 @@ export interface ExecutionResult {
 
 export type LogFn = (partyCode: string, promptId: string, module: string, msg: string) => void;
 
-function collectProjectFiles(dir: string, relative: string, depth: number): Record<string, string> {
+function collectProjectFiles(projectRoot: string, scopeFiles?: string[]): Record<string, string> {
     const result: Record<string, string> = {};
-    if (depth > 4) return result;
-    let entries;
-    try { entries = fs.readdirSync(path.join(dir, relative), { withFileTypes: true }); } catch { return result; }
-    for (const entry of entries) {
-        const rel = relative ? `${relative}/${entry.name}` : entry.name;
-        if (entry.isDirectory()) {
-            if (EXCLUDED_DIRS.has(entry.name)) continue;
-            Object.assign(result, collectProjectFiles(dir, rel, depth + 1));
-        } else if (entry.isFile()) {
+
+    if (scopeFiles && scopeFiles.length > 0) {
+        // Read only the files identified by scope extraction
+        for (const rel of scopeFiles) {
             try {
-                const content = fs.readFileSync(path.join(dir, rel), "utf-8");
+                const content = fs.readFileSync(path.join(projectRoot, rel), "utf-8");
                 if (content.length <= MAX_FILE_SIZE) {
                     result[rel] = content;
                 }
             } catch { /* skip unreadable */ }
         }
+    } else {
+        // Fallback: walk the entire project tree
+        walkFiles(projectRoot, ".", 0, (relPath) => {
+            try {
+                const content = fs.readFileSync(path.join(projectRoot, relPath), "utf-8");
+                if (content.length <= MAX_FILE_SIZE) {
+                    result[relPath] = content;
+                }
+            } catch { /* skip unreadable */ }
+        });
     }
+
     return result;
 }
 
@@ -65,8 +70,8 @@ export async function executePromptChanges(
     const modelName = process.env["OVERMIND_MODEL"] ?? GEMINI_MODEL_DEFAULT;
     const ai = new GoogleGenAI({ apiKey });
 
-    const projectRoot = process.env["OVERMIND_PROJECT_ROOT"] ?? process.cwd();
-    const projectFiles = collectProjectFiles(projectRoot, "", 0);
+    const projectRoot = getProjectRoot();
+    const projectFiles = collectProjectFiles(projectRoot, entry.scope);
     const fileContents = Object.entries(projectFiles)
         .map(([p, c]) => `=== ${p} ===\n${c}`)
         .join("\n\n");

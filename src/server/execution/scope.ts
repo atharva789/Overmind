@@ -1,18 +1,8 @@
 import { GoogleGenAI, Type } from "@google/genai";
-import fs from "node:fs";
-import path from "node:path";
 import { GEMINI_MODEL_DEFAULT } from "../../shared/constants.js";
+import { walkFiles } from "../orchestrator/file-sync.js";
 
-const MAX_WALK_DEPTH = 5;
 const MAX_AFFECTED_FILES = 15;
-
-const EXCLUDED_DIRS = new Set([
-    "node_modules",
-    ".git",
-    "dist",
-    ".overmind",
-    "modal-bridge",
-]);
 
 const scopeSchema = {
     type: Type.OBJECT,
@@ -37,26 +27,6 @@ export interface ScopeResult {
     complexity: "simple" | "moderate" | "complex";
 }
 
-function walkProjectTree(root: string, relative: string, depth: number, result: string[]): void {
-    if (depth > MAX_WALK_DEPTH) return;
-    let entries;
-    try {
-        entries = fs.readdirSync(path.join(root, relative), { withFileTypes: true });
-    } catch {
-        return;
-    }
-    for (const entry of entries) {
-        if (entry.isDirectory()) {
-            if (EXCLUDED_DIRS.has(entry.name)) continue;
-            const rel = path.join(relative, entry.name).replace(/\\/g, "/");
-            walkProjectTree(root, rel, depth + 1, result);
-        } else if (entry.isFile()) {
-            const rel = path.join(relative, entry.name).replace(/\\/g, "/");
-            result.push(rel);
-        }
-    }
-}
-
 export async function extractScope(prompt: string, projectRoot: string): Promise<ScopeResult> {
     const apiKey = process.env["GEMINI_API_KEY"];
     if (!apiKey) {
@@ -66,7 +36,7 @@ export async function extractScope(prompt: string, projectRoot: string): Promise
 
     try {
         const filePaths: string[] = [];
-        walkProjectTree(projectRoot, ".", 0, filePaths);
+        walkFiles(projectRoot, ".", 0, (relPath) => filePaths.push(relPath));
         const listing = filePaths.join("\n");
 
         const ai = new GoogleGenAI({ apiKey });

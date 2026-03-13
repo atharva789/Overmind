@@ -46,7 +46,7 @@ const generatePartyCode = customAlphabet(
 
 // ─── State ───
 
-const PROJECT_ROOT = process.cwd();
+const PROJECT_ROOT = process.env["OVERMIND_PROJECT_ROOT"] ?? process.cwd();
 const parties: Map<string, Party> = new Map();
 const evalQueues: Map<string, Promise<void>> = new Map();
 const pendingParties: Map<string, string> = new Map();
