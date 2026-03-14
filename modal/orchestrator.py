@@ -24,6 +24,11 @@ from pydantic import BaseModel
 
 from openai import AsyncOpenAI
 
+from agent_schemas import (
+    PlannerOutput,
+    PlannerTask,
+)
+
 from agent_tools import (
     AGENT_SYSTEM_PROMPT,
     TOOL_SCHEMAS,
@@ -161,15 +166,7 @@ async def generate_embeddings_batch(texts: list[str]) -> list[list[float]]:
 
     return await loop.run_in_executor(None, _run)
 
-async def agent_loop(req: RunCreateRequest, run_id: str) -> AgentResult:
-    """
-    Run the agentic tool-calling loop against the configured LLM.
-    Uses the OpenAI SDK with native tool calling — the model receives typed
-    tool schemas and returns structured tool_calls instead of free-form JSON.
-    Does not write to disk; all mutations go into the workspace dict.
-    Edge cases: Returns partial workspace on round exhaustion.
-    Invariants: Always returns AgentResult; never raises.
-    """
+def get_client():
     if not LLM_URL:
         raise RuntimeError("OVERMIND_LLM_URL is not set")
 
@@ -178,23 +175,42 @@ async def agent_loop(req: RunCreateRequest, run_id: str) -> AgentResult:
         api_key=os.environ.get("OVERMIND_LLM_API_KEY", "sk-not-needed"),
         timeout=float(LLM_TIMEOUT_S),
     )
-
     ctx: dict[str, Any] = {
         "db_pool": db_pool,
         "generate_embedding": generate_embedding,
     }
+    return client, ctx
+
+async def run_planner(client, user_query: str) -> PlannerOutput:
+    response = await client.beta.chat.completions.parse(
+        model=os.environ.get("MODEL_ID", "openai/gpt-oss-20b"),
+        messages=[
+            {"role": "system", "content": PLANNING_SYSTEM_PROMPT},
+            {"role": "user", "content": user_query},
+        ],
+        response_format=PlannerOutput,
+        temperature=0,
+    )
+    return response.choices[0].message.parsed
+
+async def subagent_loop(client, ctx, task: PlannerTask, req_files: dict[str, str], run_id: str) -> AgentResult:
+    """
+    Run the generic tool-calling loop for a specific subagent.
+    Uses the OpenAI SDK with native tool calling.
+    Does not write to disk; all mutations go into the workspace dict.
+    """
 
     messages: list[dict] = [
-        {"role": "system", "content": AGENT_SYSTEM_PROMPT},
-        {"role": "user", "content": build_agent_user_message(req)},
+        {"role": "system", "content": task.system_prompt},
+        {"role": "user", "content": task.user_prompt},
     ]
     workspace: dict[str, str] = {}
 
     for round_num in range(1, MAX_AGENT_ROUNDS + 1):
         if await should_cancel(run_id):
             break
-
-        log(f"agent_loop: run_id={run_id} round={round_num}/{MAX_AGENT_ROUNDS}")
+        
+        log(f"subagent_loop: run_id={run_id} round={round_num}/{MAX_AGENT_ROUNDS}")
 
         response = await client.chat.completions.create(
             model=MODEL_ID,
@@ -210,7 +226,7 @@ async def agent_loop(req: RunCreateRequest, run_id: str) -> AgentResult:
 
         # No tool calls → model decided it is done.
         if not msg.tool_calls:
-            log(f"agent_loop: no tool calls round={round_num}, finishing")
+            log(f"subagent_loop: no tool calls round={round_num}, finishing")
             break
 
         tool_name = ""
@@ -220,7 +236,7 @@ async def agent_loop(req: RunCreateRequest, run_id: str) -> AgentResult:
             try:
                 args = json.loads(tc.function.arguments)
             except (json.JSONDecodeError, TypeError):
-                log(f"agent_loop: bad tool args round={round_num}")
+                log(f"subagent_loop: bad tool args round={round_num}")
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tc.id,
@@ -228,9 +244,9 @@ async def agent_loop(req: RunCreateRequest, run_id: str) -> AgentResult:
                 })
                 continue
 
-            if tool_name == "finish":
+            if tool_name == "subagent_finished":
                 summary = args.get("summary", "Changes applied")
-                log(f"agent_loop: finished round={round_num}")
+                log(f"subagent_loop: finished round={round_num}")
                 return AgentResult(
                     summary=summary,
                     files=[
@@ -239,8 +255,8 @@ async def agent_loop(req: RunCreateRequest, run_id: str) -> AgentResult:
                     ],
                 )
 
-            result = await execute_tool(tool_name, args, req.files, workspace, ctx)
-            log(f"agent_loop: tool={tool_name} result_len={len(result)}")
+            result = await execute_tool(tool_name, args, req_files, workspace, ctx)
+            log(f"subagent_loop: tool={tool_name} result_len={len(result)}")
 
             messages.append({
                 "role": "tool",
@@ -253,7 +269,7 @@ async def agent_loop(req: RunCreateRequest, run_id: str) -> AgentResult:
             "detail": f"Round {round_num}: {tool_name}",
         })
 
-    log(f"agent_loop: run_id={run_id} exhausted {MAX_AGENT_ROUNDS} rounds")
+    log(f"subagent_loop: run_id={run_id} exhausted {MAX_AGENT_ROUNDS} rounds")
     return AgentResult(
         summary="Agent completed (max rounds reached)",
         files=[
@@ -261,6 +277,41 @@ async def agent_loop(req: RunCreateRequest, run_id: str) -> AgentResult:
             for p, c in sorted(workspace.items())
         ],
     )
+
+
+async def build_eval_message(subagent_tasks: PlannerOutput, subagent_results: list[AgentResult]) -> list[dict[str, str]]:
+    messages = []
+    for i, task in enumerate(subagent_tasks):
+        messages.append(
+            {
+                "role": "user",
+                "content" : f"Task given:\n\t agent system-prompt:{task.system_prompt}\n\tuser-prompt:{task.user_prompt}\nAgent output:\n{subagent_results[i].summary}"
+            }
+        )        
+    return messages
+async def agent_loop(client, ctx, subagent_tasks: PlannerOutput, req_files: dict[str, str], run_id: str) -> AgentResult:
+    """
+    TODO: Await on all subagents to terminate, then call planner_finished.
+    You will write this part!
+    """
+    for _ in range(MAX_AGENT_ROUNDS +1):
+        if await should_cancel(run_id):
+            break
+
+        coroutines = [subagent_loop(client, ctx, subagent_task, req_files, run_id) for subagent_task in subagent_tasks.tasks]
+        subagent_results: list[AgentResult] = await asyncio.gather(*coroutines)
+        messages = build_eval_message(subagent_tasks, subagent_results)
+        # compile AgentResults into one summary
+        response = await client.chat.completions.create(
+            model=MODEL_ID,
+            messages=messages,
+            tools=TOOL_SCHEMAS,
+            tool_choice="auto",
+            temperature=0,
+        )
+        
+    
+    return AgentResult(summary="No tasks run", files=[])
 
 
 async def run_worker(run_id: str, req: RunCreateRequest) -> None:
@@ -279,7 +330,10 @@ async def run_worker(run_id: str, req: RunCreateRequest) -> None:
         return
 
     try:
-        result = await agent_loop(req, run_id)
+        # start planner here
+        client, ctx = get_client()
+        subagent_tasks = await run_planner(client, build_agent_user_message(req))
+        result = await agent_loop(client, ctx, subagent_tasks, req.files, run_id)
     except Exception as exc:
         log(f"run_worker: run_id={run_id} error:\n{traceback.format_exc()}")
         await mark_run_failed(run_id, STAGE_WORKING, "Agent execution failed.", str(exc))
