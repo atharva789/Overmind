@@ -1,18 +1,21 @@
 """
-Purpose: Define agent tools, prompts, and tool execution logic for Overmind workers.
-High-level behavior: Provides the system prompt, user message builder, tool
-  definitions, and execute_tool dispatcher used by the agent agentic loop.
-Assumptions: FileChange is defined in orchestrator.py; callers pass req.files
-  as a plain dict[str, str] to avoid circular imports.
-Invariants: execute_tool is pure with respect to external I/O; all mutations
-  happen in the workspace dict passed by the caller.
+Purpose: Define agent tools, schemas, and execution logic for Overmind workers.
+High-level behavior: Provides the system prompt, user message builder, OpenAI-
+  compatible tool schemas, async handler functions, and a dispatch map used by
+  the agent loop in orchestrator.py.
+Assumptions: Callers pass req.files as a plain dict[str, str]. Async handlers
+  receive a ctx dict containing db_pool, generate_embedding, etc.
+Invariants: Pure tools (read/write/list/search/finish) only mutate workspace.
+  Dangerous tools (bash, network) perform real I/O. Semantic search queries
+  the vector DB via the ctx-provided pool.
 """
 
 from __future__ import annotations
 
-import json
+import asyncio
+import fnmatch
 import re
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Callable, Coroutine
 
 if TYPE_CHECKING:
     from orchestrator import RunCreateRequest
@@ -20,31 +23,474 @@ if TYPE_CHECKING:
 AGENT_SYSTEM_PROMPT = """\
 You are Overmind's execution worker. You modify codebases by calling tools.
 
-You MUST respond with ONLY a JSON object on each turn. No prose, no markdown.
-
-Available tools:
-
-1. read_file — read a file's contents
-   {"tool": "read_file", "args": {"path": "src/index.ts"}}
-
-2. write_file — create or overwrite a file
-   {"tool": "write_file", "args": {"path": "src/index.ts", "content": "file content here"}}
-
-3. list_files — list all available file paths
-   {"tool": "list_files", "args": {}}
-
-4. finish — end the task and report what you did
-   {"tool": "finish", "args": {"summary": "Added login endpoint"}}
-
 Workflow:
-- First, use list_files or read_file to understand the codebase.
-- Then, use write_file to make changes.
-- Finally, call finish with a summary of what you changed.
+1. Use list_files to see available files.
+2. Use semantic_search to find code by meaning, or search_files for exact patterns.
+3. Use read_file to understand relevant code.
+4. Use run_bash to install dependencies, run tests, or execute scripts.
+5. Use run_network to fetch data from APIs or download resources.
+6. Use write_file to make changes.
+7. Call subagent_finished with a summary of what you changed.
 
-Respond with exactly one JSON tool call per turn. No extra text.\
+Guidelines:
+- Always read a file before modifying it.
+- Make focused, minimal changes.
+- Preserve existing code style and formatting.\
 """
 
-MAX_TOOL_RESULT_CHARS = 12000
+
+# ─── OpenAI tool-calling schemas ─────────────────────────────────────────────
+
+TOOL_SCHEMAS: list[dict] = [
+    {
+        "type": "function",
+        "function": {
+            "name": "planner_finished",
+            "description": (
+                "Signal that the planner has finished aggregating all sub-agents' outputs."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "summary": {
+                        "type": "string",
+                        "description": "Final summary of all subagent changes and the overall result.",
+                    }
+                },
+                "required": ["summary"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "draft-plan",
+            "description": "Draft an initial plan for achieving the user's overarching goal.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "plan": {
+                        "type": "string",
+                        "description": "The detailed draft plan.",
+                    }
+                },
+                "required": ["plan"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_file",
+            "description": "Read the full contents of a file.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Relative file path to read.",
+                    }
+                },
+                "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "write_file",
+            "description": "Create or overwrite a file with the given content.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Relative file path to write.",
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "Complete file content.",
+                    },
+                },
+                "required": ["path", "content"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_files",
+            "description": "List all available file paths in the workspace.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_files",
+            "description": (
+                "Search for a regex pattern across all files. "
+                "Returns matching lines with file paths and line numbers."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pattern": {
+                        "type": "string",
+                        "description": "Regex pattern to search for.",
+                    },
+                    "glob": {
+                        "type": "string",
+                        "description": (
+                            "Optional glob to filter file paths (e.g. '*.ts')."
+                        ),
+                    },
+                },
+                "required": ["pattern"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "semantic_search",
+            "description": (
+                "Search the indexed codebase using natural language. "
+                "Finds semantically similar code chunks via vector embeddings "
+                "(BAAI/bge-large-en-v1.5 + pgvector). Returns ranked results "
+                "with similarity scores. Requires a connected database."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": (
+                            "Natural language description of the code "
+                            "you are looking for."
+                        ),
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": (
+                            "Max results to return (default 5, max 20)."
+                        ),
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "run_bash",
+            "description": (
+                "Execute an arbitrary bash command. "
+                "Can install packages, run scripts, compile code, run tests, "
+                "or perform any shell operation. No restrictions."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {
+                        "type": "string",
+                        "description": "The bash command to execute.",
+                    },
+                    "timeout": {
+                        "type": "integer",
+                        "description": (
+                            "Timeout in seconds (default 30, max 120)."
+                        ),
+                    },
+                },
+                "required": ["command"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "run_network",
+            "description": (
+                "Make an arbitrary HTTP request. "
+                "Can fetch APIs, download resources, post data, "
+                "or interact with any web service. No restrictions."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "The URL to request.",
+                    },
+                    "method": {
+                        "type": "string",
+                        "description": (
+                            "HTTP method: GET, POST, PUT, DELETE, PATCH. "
+                            "Default: GET."
+                        ),
+                    },
+                    "headers": {
+                        "type": "object",
+                        "description": "Request headers as key-value pairs.",
+                        "additionalProperties": {"type": "string"},
+                    },
+                    "body": {
+                        "type": "string",
+                        "description": (
+                            "Request body (for POST, PUT, PATCH)."
+                        ),
+                    },
+                },
+                "required": ["url"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "subagent_finished",
+            "description": (
+                "Signal that the subagent has completed its task. Call this when done."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "summary": {
+                        "type": "string",
+                        "description": "Brief summary of changes made by the subagent.",
+                    }
+                },
+                "required": ["summary"],
+            },
+        },
+    },
+]
+
+
+# ─── Tool handlers (all async) ───────────────────────────────────────────────
+
+
+async def _read_file(
+    args: dict,
+    req_files: dict[str, str],
+    workspace: dict[str, str],
+    ctx: dict[str, Any],
+) -> str:
+    path = args.get("path", "")
+    if path in workspace:
+        return workspace[path]
+    if path in req_files:
+        return req_files[path]
+    return f"Error: file not found: {path}"
+
+
+async def _write_file(
+    args: dict,
+    req_files: dict[str, str],
+    workspace: dict[str, str],
+    ctx: dict[str, Any],
+) -> str:
+    path = args.get("path", "")
+    content = args.get("content", "")
+    workspace[path] = content
+    return f"OK: wrote {len(content)} chars to {path}"
+
+
+async def _list_files(
+    args: dict,
+    req_files: dict[str, str],
+    workspace: dict[str, str],
+    ctx: dict[str, Any],
+) -> str:
+    all_paths = sorted(req_files.keys() | workspace.keys())
+    return "\n".join(all_paths) if all_paths else "(no files)"
+
+
+async def _search_files(
+    args: dict,
+    req_files: dict[str, str],
+    workspace: dict[str, str],
+    ctx: dict[str, Any],
+) -> str:
+    pattern_str = args.get("pattern", "")
+    glob_filter = args.get("glob", "")
+    all_files: dict[str, str] = {**req_files, **workspace}
+
+    if glob_filter:
+        all_files = {
+            k: v
+            for k, v in all_files.items()
+            if fnmatch.fnmatch(k, glob_filter)
+        }
+
+    try:
+        regex = re.compile(pattern_str)
+    except re.error as exc:
+        return f"Error: invalid regex: {exc}"
+
+    matches: list[str] = []
+    for path in sorted(all_files):
+        for i, line in enumerate(all_files[path].split("\n"), 1):
+            if regex.search(line):
+                matches.append(f"{path}:{i}: {line}")
+
+    return "\n".join(matches) if matches else "No matches found."
+
+
+async def _semantic_search(
+    args: dict,
+    req_files: dict[str, str],
+    workspace: dict[str, str],
+    ctx: dict[str, Any],
+) -> str:
+    query = args.get("query", "")
+    limit = min(int(args.get("limit", 5)), 20)
+
+    db_pool = ctx.get("db_pool")
+    generate_embedding = ctx.get("generate_embedding")
+
+    if db_pool is None:
+        return "Error: database not connected — semantic search unavailable"
+    if generate_embedding is None:
+        return "Error: embedding function not available"
+
+    try:
+        embedding = await generate_embedding(query)
+    except Exception as exc:
+        return f"Error: embedding generation failed: {exc}"
+
+    from utils import to_pgvector_literal
+    vec_literal = to_pgvector_literal(embedding)
+
+    try:
+        async with db_pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT file_path, chunk_name, chunk_text,
+                       start_line, end_line,
+                       1 - (embedding <=> $1::vector) AS similarity
+                FROM code_chunks
+                ORDER BY embedding <=> $1::vector
+                LIMIT $2
+                """,
+                vec_literal,
+                limit,
+            )
+    except Exception as exc:
+        return f"Error: database query failed: {exc}"
+
+    if not rows:
+        return "No matching code chunks found."
+
+    parts: list[str] = []
+    for row in rows:
+        sim = float(row["similarity"])
+        parts.append(
+            f"--- {row['chunk_name']} (similarity: {sim:.3f}) ---\n"
+            f"{row['chunk_text']}"
+        )
+    return "\n\n".join(parts)
+
+
+async def _run_bash(
+    args: dict,
+    req_files: dict[str, str],
+    workspace: dict[str, str],
+    ctx: dict[str, Any],
+) -> str:
+    command = args.get("command", "")
+    timeout_s = min(int(args.get("timeout", 30)), 120)
+
+    if not command.strip():
+        return "Error: empty command"
+
+    try:
+        proc = await asyncio.create_subprocess_shell(
+            command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(
+            proc.communicate(), timeout=timeout_s
+        )
+    except asyncio.TimeoutError:
+        proc.kill()  # type: ignore[union-attr]
+        return f"Error: command timed out after {timeout_s}s"
+    except Exception as exc:
+        return f"Error: {exc}"
+
+    parts: list[str] = []
+    if stdout:
+        parts.append(f"STDOUT:\n{stdout.decode('utf-8', errors='replace')}")
+    if stderr:
+        parts.append(f"STDERR:\n{stderr.decode('utf-8', errors='replace')}")
+    parts.append(f"EXIT CODE: {proc.returncode}")
+    return "\n".join(parts)
+
+
+async def _run_network(
+    args: dict,
+    req_files: dict[str, str],
+    workspace: dict[str, str],
+    ctx: dict[str, Any],
+) -> str:
+    import httpx
+
+    url = args.get("url", "")
+    method = args.get("method", "GET").upper()
+    headers = args.get("headers") or {}
+    body = args.get("body", "")
+
+    if not url:
+        return "Error: url is required"
+
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.request(
+                method=method,
+                url=url,
+                headers=headers,
+                content=body if body else None,
+            )
+    except Exception as exc:
+        return f"Error: request failed: {exc}"
+
+    return (
+        f"STATUS: {response.status_code}\n"
+        f"HEADERS:\n{dict(response.headers)}\n"
+        f"BODY:\n{response.text}"
+    )
+
+
+async def _draft_plan(
+    args: dict,
+    req_files: dict[str, str],
+    workspace: dict[str, str],
+    ctx: dict[str, Any],
+) -> str:
+    return f"Plan drafted successfully: {args.get('plan', '')}"
+
+
+_AsyncToolHandler = Callable[
+    [dict, dict[str, str], dict[str, str], dict[str, Any]],
+    Coroutine[Any, Any, str],
+]
+
+TOOL_HANDLERS: dict[str, _AsyncToolHandler] = {
+    "draft-plan": _draft_plan,
+    "read_file": _read_file,
+    "write_file": _write_file,
+    "list_files": _list_files,
+    "search_files": _search_files,
+    "semantic_search": _semantic_search,
+    "run_bash": _run_bash,
+    "run_network": _run_network,
+}
+
+
+# ─── Public API ───────────────────────────────────────────────────────────────
 
 
 def build_agent_user_message(req: "RunCreateRequest") -> str:
@@ -54,7 +500,9 @@ def build_agent_user_message(req: "RunCreateRequest") -> str:
     Edge cases: Empty files or scope lists produce placeholder strings.
     Invariants: Always returns a non-empty string.
     """
-    file_list = ", ".join(sorted(req.files.keys())) if req.files else "(no files)"
+    file_list = (
+        ", ".join(sorted(req.files.keys())) if req.files else "(no files)"
+    )
     scope_str = ", ".join(req.scope) if req.scope else "(all files)"
     return (
         f"Story: {req.story}\n"
@@ -64,63 +512,21 @@ def build_agent_user_message(req: "RunCreateRequest") -> str:
     )
 
 
-def execute_tool(
+async def execute_tool(
     name: str,
-    args: dict[str, str],
+    args: dict,
     req_files: dict[str, str],
     workspace: dict[str, str],
+    ctx: dict[str, Any] | None = None,
 ) -> str:
     """
-    Dispatch a tool call and return its string result.
-    Does not perform I/O; reads/writes only req_files and workspace dicts.
+    Dispatch a tool call via the handler map and return its string result.
+    Pure tools only touch req_files/workspace. Dangerous tools (bash, network)
+    perform real I/O. semantic_search queries the vector DB via ctx.
     Edge cases: Unknown tool names return an error string (no exception).
-    Invariants: workspace is the only mutable argument; req_files is read-only.
+    Invariants: workspace is the only dict mutated by pure tools.
     """
-    if name == "read_file":
-        path = args.get("path", "")
-        if path in workspace:
-            content = workspace[path]
-        elif path in req_files:
-            content = req_files[path]
-        else:
-            return f"Error: file not found: {path}"
-        if len(content) > MAX_TOOL_RESULT_CHARS:
-            return (
-                content[:MAX_TOOL_RESULT_CHARS]
-                + f"\n... (truncated, {len(content)} total chars)"
-            )
-        return content
-    elif name == "write_file":
-        path = args.get("path", "")
-        content = args.get("content", "")
-        workspace[path] = content
-        return f"OK: wrote {len(content)} chars to {path}"
-    elif name == "list_files":
-        all_paths = sorted(set(list(req_files.keys()) + list(workspace.keys())))
-        return "\n".join(all_paths) if all_paths else "(no files)"
-    elif name == "finish":
-        return args.get("summary", "")
-    else:
+    handler = TOOL_HANDLERS.get(name)
+    if handler is None:
         return f"Error: unknown tool: {name}"
-
-
-def parse_tool_call_json(content: str) -> dict:
-    """
-    Extract and parse the JSON tool call from a model response string.
-    Strips markdown code fences and finds the outermost JSON object.
-    Edge cases: Raises ValueError if no JSON object is found or if JSON is invalid.
-    Invariants: Returns a plain dict; caller must validate required keys.
-    """
-    cleaned = content.strip()
-    if cleaned.startswith("```"):
-        cleaned = re.sub(r"^```[a-zA-Z0-9]*\n?", "", cleaned)
-        if cleaned.endswith("```"):
-            cleaned = cleaned[:-3]
-        cleaned = cleaned.strip()
-    start = cleaned.find("{")
-    if start == -1:
-        raise ValueError(f"No JSON object in model response: {cleaned[:200]}")
-    end = cleaned.rfind("}")
-    if end == -1:
-        raise ValueError(f"No closing brace in model response: {cleaned[:200]}")
-    return json.loads(cleaned[start: end + 1])
+    return await handler(args, req_files, workspace, ctx or {})
