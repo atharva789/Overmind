@@ -470,7 +470,49 @@ async def _draft_plan(
     workspace: dict[str, str],
     ctx: dict[str, Any],
 ) -> str:
-    return f"Plan drafted successfully: {args.get('plan', '')}"
+    """
+    Use the LLM client (from ctx) to draft a new PlannerOutput.
+    Incorporates the prior sub-agent outputs passed via the 'plan'
+    argument as context for re-planning.
+    Does not mutate workspace.
+    Edge cases: Returns error string if client is missing from ctx.
+    Invariants: Returns a JSON-serialised PlannerOutput on success.
+    """
+    import os
+    from agent_schemas import PlannerOutput
+
+    client = ctx.get("client")
+    if client is None:
+        return "Error: LLM client not available in context"
+
+    prior_context = args.get("plan", "")
+
+    planning_prompt = (
+        "You are a Planner Agent. Based on the prior sub-agent "
+        "outputs below, draft a new set of independent tasks.\n\n"
+        f"Prior context:\n{prior_context}"
+    )
+
+    try:
+        response = await client.beta.chat.completions.parse(
+            model=os.environ.get("MODEL_ID", "openai/gpt-oss-20b"),
+            messages=[
+                {"role": "system", "content": planning_prompt},
+                {
+                    "role": "user",
+                    "content": (
+                        "Draft a revised plan. Return a JSON "
+                        "object with a 'tasks' array."
+                    ),
+                },
+            ],
+            response_format=PlannerOutput,
+            temperature=0,
+        )
+        parsed: PlannerOutput = response.choices[0].message.parsed
+        return parsed.model_dump_json()
+    except Exception as exc:
+        return f"Error: plan generation failed: {exc}"
 
 
 _AsyncToolHandler = Callable[

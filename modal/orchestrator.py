@@ -176,6 +176,7 @@ def get_client():
         timeout=float(LLM_TIMEOUT_S),
     )
     ctx: dict[str, Any] = {
+        "client": client,
         "db_pool": db_pool,
         "generate_embedding": generate_embedding,
     }
@@ -294,24 +295,61 @@ async def agent_loop(client, ctx, subagent_tasks: PlannerOutput, req_files: dict
     TODO: Await on all subagents to terminate, then call planner_finished.
     You will write this part!
     """
-    for _ in range(MAX_AGENT_ROUNDS +1):
+    workspace: dict[str, str] = {}
+
+    for _, round_num in range(MAX_AGENT_ROUNDS +1):
         if await should_cancel(run_id):
             break
 
         coroutines = [subagent_loop(client, ctx, subagent_task, req_files, run_id) for subagent_task in subagent_tasks.tasks]
         subagent_results: list[AgentResult] = await asyncio.gather(*coroutines)
-        messages = build_eval_message(subagent_tasks, subagent_results)
+        # add FileChanges to workspace
+        for res in subagent_results:
+            for p, c in res.files:
+                workspace[p] = c
+        
+        messages = await build_eval_message(subagent_tasks, subagent_results)
         # compile AgentResults into one summary
         response = await client.chat.completions.create(
             model=MODEL_ID,
             messages=messages,
-            tools=TOOL_SCHEMAS,
+            tools=TOOL_SCHEMAS[:2],
             tool_choice="auto",
-            temperature=0,
+            temperature=0.015,
         )
-        
+        msg = response.choices[0].message
+        # Preserve the assistant message (including tool_calls metadata).
+        messages.append(msg.model_dump(exclude_none=True))
+        if not msg.tool_calls:
+            break # it should call "finish"
+        tool_name = ""
+
+        for tc in msg.tool_calls:
+            try:
+                args = json.loads(tc.function.arguments)
+            except (json.JSONDecodeError, TypeError):
+                log(f"subagent_loop: bad tool args round={round_num}")
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "content": "Error: malformed tool arguments",
+                })
+                continue
+            if tool_name == "planner_finished":
+                summary = args.get("summary", "Changes applied")
+                log(f"subagent_loop: finished round={round_num}")
+                return AgentResult(
+                    summary=summary,
+                    files=[
+                    FileChange(path=p, content=c)
+                    for p, c in sorted(workspace.items())
+                    ],
+                )
+            elif tool_name == "draft-plan":
+                # re-generate plan
+                subagent_tasks = run_planner(client, )
     
-    return AgentResult(summary="No tasks run", files=[])
+    return AgentResult(summary="Task failed", files=[])
 
 
 async def run_worker(run_id: str, req: RunCreateRequest) -> None:
