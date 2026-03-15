@@ -25,6 +25,14 @@ export const ErrorCode = {
 export type ErrorCodeValue =
     (typeof ErrorCode)[keyof typeof ErrorCode];
 
+// ─── Filesystem ───
+export const EXCLUDED_DIRS = new Set([
+    "node_modules", ".git", "dist", ".overmind", "modal-bridge",
+]);
+export function getProjectRoot(): string {
+    return process.env["OVERMIND_PROJECT_ROOT"] ?? process.cwd();
+}
+
 // ─── Defaults ───
 export const DEFAULT_PORT = 4444;
 export const JOIN_TIMEOUT_MS = 5000;

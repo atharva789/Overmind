@@ -7,3 +7,7 @@ modal-bridge/.venv/
 modal/__pycache__/
 modal/.venv/
 orchestrator.log
+.worktrees/
+architecture_drawings/
+greenlight.log
+command_logs/

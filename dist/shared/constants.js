@@ -20,6 +20,13 @@ export const ErrorCode = {
     MERGE_RESOLUTION_FAILED: "MERGE_RESOLUTION_FAILED",
     MERGE_PR_FAILED: "MERGE_PR_FAILED",
 };
+// ─── Filesystem ───
+export const EXCLUDED_DIRS = new Set([
+    "node_modules", ".git", "dist", ".overmind", "modal-bridge",
+]);
+export function getProjectRoot() {
+    return process.env["OVERMIND_PROJECT_ROOT"] ?? process.cwd();
+}
 // ─── Defaults ───
 export const DEFAULT_PORT = 4444;
 export const JOIN_TIMEOUT_MS = 5000;

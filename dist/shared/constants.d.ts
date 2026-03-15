@@ -20,6 +20,8 @@ export declare const ErrorCode: {
     readonly MERGE_PR_FAILED: "MERGE_PR_FAILED";
 };
 export type ErrorCodeValue = (typeof ErrorCode)[keyof typeof ErrorCode];
+export declare const EXCLUDED_DIRS: Set<string>;
+export declare function getProjectRoot(): string;
 export declare const DEFAULT_PORT = 4444;
 export declare const JOIN_TIMEOUT_MS = 5000;
 export declare const PARTY_CODE_LENGTH = 4;

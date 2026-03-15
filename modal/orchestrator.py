@@ -1,54 +1,133 @@
 """
-Purpose: Orchestrate Overmind execution runs via Modal workers.
-High-level behavior: Creates runs, spawns workers, and serves run status.
-Assumptions: OVERMIND_LLM_URL points to a vLLM OpenAI-compatible API.
-Invariants: Handlers never generate edits; workers produce all file updates.
+Purpose: FastAPI app orchestrating Overmind execution runs.
+High-level behavior: Exposes /runs, /health, and /initialize_codebase endpoints.
+  Workers run in-process via asyncio.create_task; for production, hook in
+  ECS Fargate task dispatch or Lambda invocation in create_run().
+Assumptions: OVERMIND_LLM_URL points to an OpenAI-compatible chat completions API.
+Invariants: Handlers never generate file edits; workers produce all file updates.
+  db_pool is None when OVERMIND_DATABASE_URL is unset; DB endpoints return 503.
 """
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import json
 import os
-import re
 import traceback
-from datetime import datetime, timezone
+from contextlib import asynccontextmanager
 from typing import Any, Optional
 
 import httpx
-import modal
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
-APP_NAME = "overmind-orchestrator"
-RUN_STORE_NAME = "overmind-orchestrator-runs"
-DEFAULT_LLM_URL = "https://atharva789--overmind-llm-llmserver-serve.modal.run"
-MODEL_ID = os.environ.get("MODEL_ID", "openai/gpt-oss-20b")
-LLM_URL = os.environ.get("OVERMIND_LLM_URL", DEFAULT_LLM_URL).rstrip("/")
-LLM_TIMEOUT_S = int(os.environ.get("OVERMIND_LLM_TIMEOUT_S", "3600"))
-LOG_TRUNCATE_CHARS = 1000
-MAX_AGENT_ROUNDS = 10
-MAX_PARSE_RETRIES = 2
-LLM_SECRET_NAME = "overmind-llm-auth"
+from openai import AsyncOpenAI
 
-STAGE_SPAWNING = "Spawning sandbox..."
-STAGE_WORKING = "Agent is working..."
-STAGE_EXTRACTING = "Extracting changes..."
-
-STATUS_QUEUED = "queued"
-STATUS_RUNNING = "running"
-STATUS_COMPLETED = "completed"
-STATUS_FAILED = "failed"
-STATUS_CANCELED = "canceled"
-
-image = modal.Image.debian_slim().pip_install(
-    "fastapi",
-    "httpx",
+from agent_schemas import (
+    PlannerOutput,
+    PlannerTask,
 )
 
-app = modal.App(APP_NAME)
-run_store = modal.Dict.from_name(RUN_STORE_NAME, create_if_missing=True)
-web_app = FastAPI()
+from agent_tools import (
+    AGENT_SYSTEM_PROMPT,
+    TOOL_SCHEMAS,
+    build_agent_user_message,
+    execute_tool,
+)
+from codebase_indexer import (
+    InitializeCodebaseRequest,
+    InitializeCodebaseResponse,
+    average_vectors,
+    chunk_file,
+)
+from codebase_store import (
+    resolve_similar_project,
+    upsert_branch_and_chunks,
+    upsert_branch_only,
+)
+from run_store import (
+    AgentResult,
+    FileChange,
+    RunStatusRecord,
+    mark_run_canceled,
+    mark_run_completed,
+    mark_run_failed,
+    mark_run_running,
+    run_exists,
+    run_record_to_dict,
+    read_run_record,
+    should_cancel,
+    update_run_record,
+    write_run_record,
+    STATUS_CANCELED,
+    STATUS_COMPLETED,
+    STATUS_FAILED,
+    STATUS_QUEUED,
+    STAGE_SPAWNING,
+    STAGE_WORKING,
+)
+from utils import log, now_iso
 
+
+APP_NAME = "overmind-orchestrator"
+MODEL_ID = os.environ.get("MODEL_ID", "openai/gpt-oss-20b")
+LLM_URL = os.environ.get("OVERMIND_LLM_URL", "").rstrip("/")
+LLM_TIMEOUT_S = int(os.environ.get("OVERMIND_LLM_TIMEOUT_S", "3600"))
+OVERMIND_DATABASE_URL = os.environ.get("OVERMIND_DATABASE_URL", "")
+MAX_AGENT_ROUNDS = 10
+
+PLANNING_SYSTEM_PROMPT = """You are an expert Planner Agent.
+Your sole responsibility is to analyze the user's overarching query and decompose it into a series of clear, isolated, and actionable tasks.
+These tasks will be executed by specialized downstream agents.
+
+Constraints and Rules:
+1. Each task must be independent and clearly defined.
+2. Provide specific success criteria or context for each task.
+3. Do not attempt to write code or execute the tasks yourself.
+4. Output your plan as a structured JSON array of task objects, where each object has a 'description' and 'context' field.
+"""
+# populated by the FastAPI lifespan handler; None when DATABASE_URL is unset
+db_pool: Any = None
+
+# Lazily-cached embedding model (fastembed TextEmbedding is expensive to construct)
+_embedding_model: Any = None
+
+# Strong references to background tasks to prevent GC before completion
+_active_tasks: set[asyncio.Task] = set()
+
+
+def _get_embedding_model():
+    global _embedding_model
+    if _embedding_model is None:
+        from fastembed import TextEmbedding
+        model_name = os.environ.get("OVERMIND_EMBEDDING_MODEL", "BAAI/bge-large-en-v1.5")
+        _embedding_model = TextEmbedding(model_name)
+    return _embedding_model
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Initialize and tear down the asyncpg connection pool."""
+    global db_pool
+    if OVERMIND_DATABASE_URL:
+        log("lifespan: connecting to database...")
+        import asyncpg
+        db_pool = await asyncpg.create_pool(
+            dsn=OVERMIND_DATABASE_URL,
+            min_size=2,
+            max_size=10,
+            ssl="require",
+        )
+        log("lifespan: database pool ready.")
+    else:
+        log("lifespan: OVERMIND_DATABASE_URL not set, skipping DB pool.")
+    yield
+    if db_pool:
+        await db_pool.close()
+        log("lifespan: database pool closed.")
+
+
+web_app = FastAPI(lifespan=lifespan)
 
 class RunCreateRequest(BaseModel):
     runId: str
@@ -63,373 +142,277 @@ class RunCreateResponse(BaseModel):
     runId: str
 
 
-class FileChange(BaseModel):
-    path: str
-    content: str
-
-
-class ToolCall(BaseModel):
-    tool: str
-    args: dict[str, str]
-
-
-class AgentResult(BaseModel):
-    summary: str
-    files: list[FileChange]
-
-
-class RunStatusRecord(BaseModel):
-    status: str
-    stage: Optional[str] = None
-    detail: Optional[str] = None
-    files: Optional[list[FileChange]] = None
-    summary: Optional[str] = None
-    error: Optional[str] = None
-    updatedAt: str
-
-
-def now_iso() -> str:
+async def generate_embedding(text: str) -> list[float]:
     """
-    Build a UTC ISO timestamp string.
-    Does not read external time sources beyond system clock.
-    Edge cases: None.
-    Invariants: Always returns timezone-aware ISO strings.
+    Generate a text embedding via fastembed (ONNX, CPU/GPU).
+    Default model: BAAI/bge-large-en-v1.5 (1024-dim).
+    Edge cases: Raises on model/network errors; callers must wrap in try/except.
+    Invariants: Returns a list of floats with fixed dimensionality.
     """
-    return datetime.now(timezone.utc).isoformat()
+    model = _get_embedding_model()
+    return next(iter(model.embed([text]))).tolist()
 
 
-def log(message: str) -> None:
+async def generate_embeddings_batch(texts: list[str]) -> list[list[float]]:
     """
-    Write a timestamped log message.
-    Does not include prompt content.
-    Edge cases: Long messages are truncated.
-    Invariants: Log entries always include UTC timestamps.
+    Batch-embed texts using fastembed in a thread pool to avoid blocking the event loop.
+    Invariants: Returns one vector per input text, same order.
     """
-    ts = now_iso()
-    truncated = message[:LOG_TRUNCATE_CHARS]
-    print(f"[{ts}] {truncated}")
+    loop = asyncio.get_running_loop()
+    model = _get_embedding_model()
 
+    def _run() -> list[list[float]]:
+        return [v.tolist() for v in model.embed(texts)]
 
-AGENT_SYSTEM_PROMPT = """\
-You are Overmind's execution worker. You modify codebases by calling tools.
+    return await loop.run_in_executor(None, _run)
 
-You MUST respond with ONLY a JSON object on each turn. No prose, no markdown.
+def get_client() -> tuple[AsyncOpenAI, dict[str, Any]]:
+    """Build an AsyncOpenAI client and shared context dict.
 
-Available tools:
-
-1. read_file — read a file's contents
-   {"tool": "read_file", "args": {"path": "src/index.ts"}}
-
-2. write_file — create or overwrite a file
-   {"tool": "write_file", "args": {"path": "src/index.ts", "content": "file content here"}}
-
-3. list_files — list all available file paths
-   {"tool": "list_files", "args": {}}
-
-4. finish — end the task and report what you did
-   {"tool": "finish", "args": {"summary": "Added login endpoint"}}
-
-Workflow:
-- First, use list_files or read_file to understand the codebase.
-- Then, use write_file to make changes.
-- Finally, call finish with a summary of what you changed.
-
-Respond with exactly one JSON tool call per turn. No extra text.\
-"""
-
-
-def build_agent_user_message(req: RunCreateRequest) -> str:
-    file_list = ", ".join(sorted(req.files.keys())) if req.files else "(no files)"
-    scope_str = ", ".join(req.scope) if req.scope else "(all files)"
-    return (
-        f"Story: {req.story}\n"
-        f"Scope: {scope_str}\n"
-        f"Available files: {file_list}\n\n"
-        f"Task: {req.prompt}"
-    )
-
-
-MAX_TOOL_RESULT_CHARS = 12000
-
-
-def execute_tool(
-    name: str, args: dict[str, str], req_files: dict[str, str], workspace: dict[str, str]
-) -> str:
-    if name == "read_file":
-        path = args.get("path", "")
-        if path in workspace:
-            content = workspace[path]
-        elif path in req_files:
-            content = req_files[path]
-        else:
-            return f"Error: file not found: {path}"
-        if len(content) > MAX_TOOL_RESULT_CHARS:
-            return content[:MAX_TOOL_RESULT_CHARS] + f"\n... (truncated, {len(content)} total chars)"
-        return content
-    elif name == "write_file":
-        path = args.get("path", "")
-        content = args.get("content", "")
-        workspace[path] = content
-        return f"OK: wrote {len(content)} chars to {path}"
-    elif name == "list_files":
-        all_paths = sorted(set(list(req_files.keys()) + list(workspace.keys())))
-        return "\n".join(all_paths) if all_paths else "(no files)"
-    elif name == "finish":
-        return args.get("summary", "")
+    Priority: OVERMIND_LLM_URL (custom endpoint) > OPENAI_API_KEY (OpenAI API).
+    Raises RuntimeError if neither is configured.
+    """
+    if LLM_URL:
+        client = AsyncOpenAI(
+            base_url=f"{LLM_URL}/v1",
+            api_key=os.environ.get("OVERMIND_LLM_API_KEY", "sk-not-needed"),
+            timeout=float(LLM_TIMEOUT_S),
+        )
+    elif os.environ.get("OPENAI_API_KEY"):
+        client = AsyncOpenAI(
+            api_key=os.environ["OPENAI_API_KEY"],
+            timeout=float(LLM_TIMEOUT_S),
+        )
     else:
-        return f"Error: unknown tool: {name}"
+        raise RuntimeError(
+            "No LLM configured. Set OVERMIND_LLM_URL (custom endpoint) "
+            "or OPENAI_API_KEY (OpenAI API)."
+        )
 
+    ctx: dict[str, Any] = {
+        "client": client,
+        "db_pool": db_pool,
+        "generate_embedding": generate_embedding,
+    }
+    return client, ctx
 
-def parse_tool_call(content: str) -> ToolCall:
-    cleaned = content.strip()
-    if cleaned.startswith("```"):
-        cleaned = re.sub(r"^```[a-zA-Z0-9]*\n?", "", cleaned)
-        if cleaned.endswith("```"):
-            cleaned = cleaned[:-3]
-        cleaned = cleaned.strip()
-    start = cleaned.find("{")
-    if start == -1:
-        raise ValueError(f"No JSON object in model response: {cleaned[:200]}")
-    end = cleaned.rfind("}")
-    if end == -1:
-        raise ValueError(f"No closing brace in model response: {cleaned[:200]}")
-    parsed = json.loads(cleaned[start : end + 1])
-    return ToolCall(tool=parsed["tool"], args=parsed.get("args", {}))
-
-
-async def read_run_record(run_id: str) -> RunStatusRecord:
-    """
-    Load a run record from the Modal dictionary.
-    Does not create missing records.
-    Edge cases: Raises KeyError if run is missing.
-    Invariants: Returned record is schema-validated.
-    """
-    raw = await run_store.get.aio(run_id)
-    if raw is None:
-        raise KeyError(f"run not found: {run_id}")
-    if hasattr(RunStatusRecord, "model_validate"):
-        return RunStatusRecord.model_validate(raw)
-    return RunStatusRecord.parse_obj(raw)
-
-
-def run_record_to_dict(record: RunStatusRecord) -> dict[str, Any]:
-    """
-    Convert a run record to a plain dict, omitting None values.
-    Does not mutate the input record.
-    Edge cases: Supports both Pydantic v1 and v2 APIs.
-    Invariants: Output is JSON-serializable with no null values.
-    """
-    if hasattr(record, "model_dump"):
-        return record.model_dump(exclude_none=True)
-    return {k: v for k, v in record.dict().items() if v is not None}
-
-
-async def write_run_record(run_id: str, record: RunStatusRecord) -> None:
-    """
-    Persist a run record to the Modal dictionary.
-    Does not mutate the input record.
-    Edge cases: Overwrites any existing entry.
-    Invariants: Stored records include updatedAt.
-    """
-    await run_store.put.aio(run_id, run_record_to_dict(record))
-
-
-async def update_run_record(run_id: str, updates: dict[str, Any]) -> None:
-    """
-    Update an existing run record with new fields.
-    Does not create records when missing.
-    Edge cases: Raises KeyError if run is missing.
-    Invariants: updatedAt is always refreshed.
-    """
-    record = await read_run_record(run_id)
-    data = run_record_to_dict(record)
-    data.update(updates)
-    data["updatedAt"] = now_iso()
-    await write_run_record(run_id, RunStatusRecord(**data))
-
-
-async def should_cancel(run_id: str) -> bool:
-    """
-    Determine if a run has been canceled.
-    Does not mutate run state.
-    Edge cases: Missing runs return False.
-    Invariants: Canceled status is treated as terminal.
-    """
-    try:
-        record = await read_run_record(run_id)
-    except KeyError:
-        return False
-    return record.status == STATUS_CANCELED
-
-
-async def mark_run_running(run_id: str) -> None:
-    """
-    Mark a run as running with the working stage.
-    Does not validate run existence.
-    Edge cases: Missing runs raise KeyError.
-    Invariants: Stage is set to STAGE_WORKING.
-    """
-    await update_run_record(
-        run_id,
-        {
-            "status": STATUS_RUNNING,
-            "stage": STAGE_WORKING,
-            "detail": None,
-            "error": None,
-        },
+async def run_planner(client, user_query: str) -> PlannerOutput:
+    response = await client.beta.chat.completions.parse(
+        model=os.environ.get("MODEL_ID", "openai/gpt-oss-20b"),
+        messages=[
+            {"role": "system", "content": PLANNING_SYSTEM_PROMPT},
+            {"role": "user", "content": user_query},
+        ],
+        response_format=PlannerOutput,
+        temperature=0,
     )
+    return response.choices[0].message.parsed
 
-
-async def mark_run_canceled(run_id: str, detail: str) -> None:
+async def subagent_loop(client, ctx, task: PlannerTask, req_files: dict[str, str], run_id: str) -> AgentResult:
     """
-    Mark a run as canceled with a detail message.
-    Does not terminate running workers.
-    Edge cases: Missing runs raise KeyError.
-    Invariants: Status is set to STATUS_CANCELED.
+    Run the generic tool-calling loop for a specific subagent.
+    Uses the OpenAI SDK with native tool calling.
+    Does not write to disk; all mutations go into the workspace dict.
     """
-    await update_run_record(
-        run_id,
-        {
-            "status": STATUS_CANCELED,
-            "stage": None,
-            "detail": detail,
-        },
-    )
 
-
-async def mark_run_failed(run_id: str, stage: str, detail: str, error: str) -> None:
-    """
-    Mark a run as failed with detail and error.
-    Does not retry failed executions.
-    Edge cases: Missing runs raise KeyError.
-    Invariants: Status is set to STATUS_FAILED.
-    """
-    await update_run_record(
-        run_id,
-        {
-            "status": STATUS_FAILED,
-            "stage": stage,
-            "detail": detail,
-            "error": error,
-        },
-    )
-
-
-async def mark_run_completed(run_id: str, result: AgentResult) -> None:
-    """
-    Mark a run as completed with extracted files and summary.
-    Does not mutate the AgentResult object.
-    Edge cases: Missing runs raise KeyError.
-    Invariants: Status is set to STATUS_COMPLETED.
-    """
-    await update_run_record(
-        run_id,
-        {
-            "status": STATUS_COMPLETED,
-            "stage": STAGE_EXTRACTING,
-            "files": result.files,
-            "summary": result.summary,
-        },
-    )
-
-
-async def agent_loop(req: RunCreateRequest, run_id: str) -> AgentResult:
-    headers = {"Content-Type": "application/json"}
-    api_key = os.environ.get("OVERMIND_LLM_API_KEY")
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
-
-    url = f"{LLM_URL}/v1/chat/completions"
-    timeout = httpx.Timeout(timeout=LLM_TIMEOUT_S, connect=30.0)
-
-    messages: list[dict[str, str]] = [
-        {"role": "system", "content": AGENT_SYSTEM_PROMPT},
-        {"role": "user", "content": build_agent_user_message(req)},
+    messages: list[dict] = [
+        {"role": "system", "content": task.system_prompt},
+        {"role": "user", "content": task.user_prompt},
     ]
+    workspace: dict[str, str] = {}
 
+    for round_num in range(1, MAX_AGENT_ROUNDS + 1):
+        if await should_cancel(run_id):
+            break
+        
+        log(f"subagent_loop: run_id={run_id} round={round_num}/{MAX_AGENT_ROUNDS}")
+
+        response = await client.chat.completions.create(
+            model=MODEL_ID,
+            messages=messages,
+            tools=TOOL_SCHEMAS,
+            tool_choice="auto",
+            temperature=0,
+        )
+
+        msg = response.choices[0].message
+        # Preserve the assistant message (including tool_calls metadata).
+        messages.append(msg.model_dump(exclude_none=True))
+
+        # No tool calls → model decided it is done.
+        if not msg.tool_calls:
+            log(f"subagent_loop: no tool calls round={round_num}, finishing")
+            break
+
+        tool_name = ""
+        for tc in msg.tool_calls:
+            tool_name = tc.function.name
+
+            try:
+                args = json.loads(tc.function.arguments)
+            except (json.JSONDecodeError, TypeError):
+                log(f"subagent_loop: bad tool args round={round_num}")
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "content": "Error: malformed tool arguments",
+                })
+                continue
+
+            if tool_name == "subagent_finished":
+                summary = args.get("summary", "Changes applied")
+                log(f"subagent_loop: finished round={round_num}")
+                return AgentResult(
+                    summary=summary,
+                    files=[
+                        FileChange(path=p, content=c)
+                        for p, c in sorted(workspace.items())
+                    ],
+                )
+
+            result = await execute_tool(tool_name, args, req_files, workspace, ctx)
+            log(f"subagent_loop: tool={tool_name} result_len={len(result)}")
+
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tc.id,
+                "content": result,
+            })
+
+        await update_run_record(run_id, {
+            "stage": STAGE_WORKING,
+            "detail": f"Round {round_num}: {tool_name}",
+        })
+
+    log(f"subagent_loop: run_id={run_id} exhausted {MAX_AGENT_ROUNDS} rounds")
+    return AgentResult(
+        summary="Agent completed (max rounds reached)",
+        files=[
+            FileChange(path=p, content=c)
+            for p, c in sorted(workspace.items())
+        ],
+    )
+
+
+def build_eval_message(
+    tasks: PlannerOutput, results: list[AgentResult],
+) -> list[dict[str, str]]:
+    """Build evaluation messages pairing each task with its subagent result."""
+    messages: list[dict[str, str]] = []
+    for i, task in enumerate(tasks.tasks):
+        messages.append({
+            "role": "user",
+            "content": (
+                f"Task given:\n\tsystem-prompt: {task.system_prompt}"
+                f"\n\tuser-prompt: {task.user_prompt}"
+                f"\nAgent output:\n{results[i].summary}"
+            ),
+        })
+    return messages
+
+
+async def agent_loop(
+    client: AsyncOpenAI,
+    ctx: dict[str, Any],
+    subagent_tasks: PlannerOutput,
+    req_files: dict[str, str],
+    run_id: str,
+) -> AgentResult:
+    """
+    Run parallel subagents for each planner task, then ask the planner to
+    evaluate results. The planner can either call planner_finished (done)
+    or draft-plan to re-plan and spawn another round of subagents.
+    Accumulates all file changes across rounds into a single workspace.
+    """
+    pending_tasks = subagent_tasks
     workspace: dict[str, str] = {}
 
     for round_num in range(1, MAX_AGENT_ROUNDS + 1):
         if await should_cancel(run_id):
             break
 
-        log(f"agent_loop: run_id={run_id} round={round_num}/{MAX_AGENT_ROUNDS} messages={len(messages)}")
+        log(f"agent_loop: run_id={run_id} round={round_num}/{MAX_AGENT_ROUNDS}")
 
-        payload = {
-            "model": MODEL_ID,
-            "messages": messages,
-            "temperature": 0,
-            "top_p": 1,
-            "seed": 0,
-            "response_format": {"type": "json_object"},
-        }
+        coroutines = [
+            subagent_loop(client, ctx, task, req_files, run_id)
+            for task in pending_tasks.tasks
+        ]
+        subagent_results: list[AgentResult] = await asyncio.gather(*coroutines)
 
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            response = await client.post(url, headers=headers, json=payload)
-            log(f"agent_loop: response status={response.status_code}")
-            response.raise_for_status()
-            data = response.json()
+        for res in subagent_results:
+            for fc in res.files:
+                workspace[fc.path] = fc.content
 
-        choices = data.get("choices")
-        if not choices:
-            raise ValueError("LLM response missing choices")
-        message = choices[0].get("message") or {}
-        content = message.get("content")
-        if not isinstance(content, str) or not content.strip():
-            raise ValueError("LLM response missing content")
+        messages = build_eval_message(pending_tasks, subagent_results)
 
-        log(f"agent_loop: round={round_num} content ({len(content)} chars): {content[:300]}")
+        response = await client.chat.completions.create(
+            model=MODEL_ID,
+            messages=messages,
+            tools=TOOL_SCHEMAS[:2],
+            tool_choice="auto",
+            temperature=0.015,
+        )
+        msg = response.choices[0].message
+        messages.append(msg.model_dump(exclude_none=True))
 
-        try:
-            tool_call = parse_tool_call(content)
-        except (json.JSONDecodeError, ValueError, KeyError) as exc:
-            log(f"agent_loop: parse failed round={round_num}: {exc}")
-            messages.append({"role": "assistant", "content": content})
-            messages.append({
-                "role": "user",
-                "content": (
-                    "Your previous response was not valid JSON. "
-                    "Respond with ONLY a JSON object like: "
-                    '{"tool": "read_file", "args": {"path": "file.ts"}}'
-                ),
-            })
-            continue
+        if not msg.tool_calls:
+            log(f"agent_loop: no tool calls round={round_num}, finishing")
+            break
 
-        messages.append({"role": "assistant", "content": content})
+        for tc in msg.tool_calls:
+            tool_name = tc.function.name
 
-        if tool_call.tool == "finish":
-            summary = tool_call.args.get("summary", "Changes applied")
-            log(f"agent_loop: finished at round {round_num}: {summary}")
-            files = [FileChange(path=p, content=c) for p, c in sorted(workspace.items())]
-            return AgentResult(summary=summary, files=files)
+            try:
+                args = json.loads(tc.function.arguments)
+            except (json.JSONDecodeError, TypeError):
+                log(f"agent_loop: bad tool args round={round_num}")
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "content": "Error: malformed tool arguments",
+                })
+                continue
+
+            if tool_name == "planner_finished":
+                summary = args.get("summary", "Changes applied")
+                log(f"agent_loop: planner_finished round={round_num}")
+                return AgentResult(
+                    summary=summary,
+                    files=[
+                        FileChange(path=p, content=c)
+                        for p, c in sorted(workspace.items())
+                    ],
+                )
+
+            if tool_name == "draft-plan":
+                log(f"agent_loop: re-planning round={round_num}")
+                pending_tasks = await run_planner(
+                    client, args.get("plan", ""),
+                )
 
         await update_run_record(run_id, {
             "stage": STAGE_WORKING,
-            "detail": f"Round {round_num}: {tool_call.tool}({', '.join(f'{k}={v[:50]}' for k, v in tool_call.args.items() if k != 'content')})",
+            "detail": f"Planner round {round_num}",
         })
 
-        result = execute_tool(tool_call.tool, tool_call.args, req.files, workspace)
-        log(f"agent_loop: tool={tool_call.tool} result_len={len(result)}")
-        messages.append({"role": "user", "content": f"Tool result:\n{result}"})
+    log(f"agent_loop: run_id={run_id} exhausted {MAX_AGENT_ROUNDS} rounds")
+    return AgentResult(
+        summary="Agent completed (max rounds reached)",
+        files=[
+            FileChange(path=p, content=c)
+            for p, c in sorted(workspace.items())
+        ],
+    )
 
-    log(f"agent_loop: run_id={run_id} exhausted {MAX_AGENT_ROUNDS} rounds, returning workspace")
-    files = [FileChange(path=p, content=c) for p, c in sorted(workspace.items())]
-    return AgentResult(summary="Agent completed (max rounds reached)", files=files)
 
-
-@app.function(
-    image=image,
-    secrets=[modal.Secret.from_name(LLM_SECRET_NAME)],
-    timeout=3600,
-)
 async def run_worker(run_id: str, req: RunCreateRequest) -> None:
     """
-    Execute a run inside a Modal worker function.
+    Execute a run: run the agent loop and persist the result.
     Does not write to the host filesystem.
-    Edge cases: Cancels early if run is marked canceled.
+    Edge cases: Cancels early if run is marked canceled before execution starts.
     Invariants: Updates run status on all exit paths.
     """
-    log(f"run_worker: start run_id={run_id} prompt_len={len(req.prompt)} files={len(req.files)}")
+    log(f"run_worker: start run_id={run_id} files={len(req.files)}")
     await mark_run_running(run_id)
 
     if await should_cancel(run_id):
@@ -438,74 +421,70 @@ async def run_worker(run_id: str, req: RunCreateRequest) -> None:
         return
 
     try:
-        result = await agent_loop(req, run_id)
+        # start planner here
+        client, ctx = get_client()
+        subagent_tasks = await run_planner(client, build_agent_user_message(req))
+        result = await agent_loop(client, ctx, subagent_tasks, req.files, run_id)
     except Exception as exc:
-        log(f"run_worker: run_id={run_id} agent error:\n{traceback.format_exc()}")
-        await mark_run_failed(
-            run_id,
-            STAGE_WORKING,
-            "Agent execution failed.",
-            str(exc),
-        )
+        log(f"run_worker: run_id={run_id} error:\n{traceback.format_exc()}")
+        await mark_run_failed(run_id, STAGE_WORKING, "Agent execution failed.", str(exc))
         return
 
-    log(f"run_worker: run_id={run_id} completed summary_len={len(result.summary)} files={len(result.files)}")
+    log(f"run_worker: run_id={run_id} completed files={len(result.files)}")
     await mark_run_completed(run_id, result)
 
 
 @web_app.get("/health")
 async def health() -> dict[str, object]:
     """
-    Check LLM connectivity by requesting the model list.
+    Check LLM reachability.
     Does not raise on failure.
-    Edge cases: Returns llm_connected=false on errors.
-    Invariants: Always returns a status payload.
+    Invariants: Always returns a status dict.
     """
+    if not LLM_URL:
+        return {"status": "ok", "llm_connected": False, "error": "OVERMIND_LLM_URL not set"}
     url = f"{LLM_URL}/v1/models"
-    headers = {"Content-Type": "application/json"}
+    headers: dict[str, str] = {"Content-Type": "application/json"}
     api_key = os.environ.get("OVERMIND_LLM_API_KEY")
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
-
     try:
         async with httpx.AsyncClient(timeout=5) as client:
-            response = await client.get(url, headers=headers)
-            response.raise_for_status()
+            (await client.get(url, headers=headers)).raise_for_status()
         return {"status": "ok", "llm_connected": True}
     except Exception as exc:
-        log(f"health check failed: {exc}")
+        log(f"health: {exc}")
         return {"status": "ok", "llm_connected": False}
 
 
 @web_app.post("/runs")
 async def create_run(req: RunCreateRequest) -> RunCreateResponse:
     """
-    Create a run record and spawn a worker.
-    Does not call the LLM in-process.
+    Enqueue a run and spawn a worker.
+    Currently spawns in-process via asyncio.create_task.
+    For production, replace the spawn line with ECS Fargate task dispatch
+    or Lambda invocation.
     Edge cases: Rejects duplicate run IDs.
     Invariants: Newly created runs start in queued state.
     """
-    if await run_store.get.aio(req.runId) is not None:
+    if await run_exists(req.runId):
         raise HTTPException(status_code=409, detail="run already exists")
 
-    log(
-        "create runId="
-        f"{req.runId} prompt_len={len(req.prompt)} "
-        f"files={len(req.files)}"
+    log(f"create_run: runId={req.runId} files={len(req.files)}")
+
+    await write_run_record(
+        req.runId,
+        RunStatusRecord(
+            status=STATUS_QUEUED,
+            stage=STAGE_SPAWNING,
+            updatedAt=now_iso(),
+        ),
     )
 
-    record = RunStatusRecord(
-        status=STATUS_QUEUED,
-        stage=STAGE_SPAWNING,
-        detail=None,
-        files=None,
-        summary=None,
-        error=None,
-        updatedAt=now_iso(),
-    )
-    await write_run_record(req.runId, record)
+    task = asyncio.create_task(run_worker(req.runId, req))
+    _active_tasks.add(task)
+    task.add_done_callback(_active_tasks.discard)
 
-    await run_worker.spawn.aio(req.runId, req)
     return RunCreateResponse(runId=req.runId)
 
 
@@ -513,9 +492,8 @@ async def create_run(req: RunCreateRequest) -> RunCreateResponse:
 async def get_run(run_id: str) -> dict[str, object]:
     """
     Return the current status of a run.
-    Does not mutate run state.
     Edge cases: Raises 404 for missing runs.
-    Invariants: Responses are schema-validated.
+    Invariants: Response is schema-validated.
     """
     try:
         record = await read_run_record(run_id)
@@ -528,8 +506,8 @@ async def get_run(run_id: str) -> dict[str, object]:
 async def cancel_run(run_id: str) -> dict[str, object]:
     """
     Cancel a run by updating its status.
-    Does not terminate running workers.
-    Edge cases: Raises 404 for missing runs.
+    Does not terminate already-running workers.
+    Edge cases: Raises 404 for missing runs; no-ops on terminal states.
     Invariants: Canceled runs remain terminal.
     """
     try:
@@ -542,25 +520,56 @@ async def cancel_run(run_id: str) -> dict[str, object]:
 
     await update_run_record(
         run_id,
-        {
-            "status": STATUS_CANCELED,
-            "stage": None,
-            "detail": "Run canceled by client.",
-        },
+        {"status": STATUS_CANCELED, "stage": None, "detail": "Run canceled by client."},
     )
     return {"ok": True}
 
 
-@app.function(
-    image=image,
-    secrets=[modal.Secret.from_name(LLM_SECRET_NAME)],
-)
-@modal.asgi_app()
-def fastapi_app() -> FastAPI:
+@web_app.post("/initialize_codebase")
+async def initialize_codebase(req: InitializeCodebaseRequest) -> InitializeCodebaseResponse:
     """
-    Expose the FastAPI application via Modal.
-    Does not mutate application state.
-    Edge cases: None.
-    Invariants: Returns the shared web_app instance.
+    Chunk and embed all project files, then store them in the DB.
+    Does not delete existing chunks; re-runs only add new ones.
+    Edge cases: Returns 503 if DB or embedding service is unavailable.
+    Invariants: resolvedProjectId may differ from req.projectId when a very
+      similar project already exists (cosine similarity > SIMILARITY_THRESHOLD).
     """
-    return web_app
+    if db_pool is None:
+        raise HTTPException(status_code=503, detail="database not connected")
+
+    log(f"initialize_codebase: projectId={req.projectId} branch={req.branchName} files={len(req.files)}")
+
+    # Chunk all files
+    all_chunks: list[dict] = []
+    file_hashes: dict[str, str] = {}
+    for path, content in req.files.items():
+        file_hashes[path] = hashlib.md5(content.encode()).hexdigest()
+        all_chunks.extend(chunk_file(path, content))
+
+    if not all_chunks:
+        branch_id = await upsert_branch_only(db_pool, req.projectId, req.branchName)
+        return InitializeCodebaseResponse(
+            resolvedProjectId=req.projectId, branchId=branch_id, chunksStored=0
+        )
+
+    # Generate all embeddings in a single batch (thread pool, non-blocking)
+    try:
+        embeddings: list[list[float]] = await generate_embeddings_batch(
+            [c["chunk_text"] for c in all_chunks]
+        )
+    except Exception as exc:
+        log(f"initialize_codebase: embedding error: {exc}")
+        raise HTTPException(status_code=503, detail="embedding service unavailable")
+
+    new_centroid = average_vectors(embeddings)
+    resolved_project_id = await resolve_similar_project(db_pool, req.projectId, new_centroid)
+
+    branch_id, chunks_stored = await upsert_branch_and_chunks(
+        db_pool, resolved_project_id, req.branchName, all_chunks, embeddings, file_hashes,
+    )
+
+    return InitializeCodebaseResponse(
+        resolvedProjectId=resolved_project_id,
+        branchId=branch_id,
+        chunksStored=chunks_stored,
+    )

@@ -7,16 +7,8 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { ALWAYS_SYNC_PATTERNS } from "../../shared/constants.js";
+import { ALWAYS_SYNC_PATTERNS, EXCLUDED_DIRS } from "../../shared/constants.js";
 import type { EvaluationResult } from "../../shared/protocol.js";
-
-const EXCLUDED_DIRS = new Set([
-    "node_modules",
-    ".git",
-    "dist",
-    ".overmind",
-    "modal-bridge",
-]);
 const MAX_LIST_DEPTH = 3;
 
 export interface FilePack {
@@ -94,7 +86,7 @@ function matchesPattern(relPath: string, pattern: string): boolean {
  * Walk files under a directory with a depth cap.
  * Does not traverse excluded directories.
  */
-function walkFiles(
+export function walkFiles(
     root: string,
     relative: string,
     depth: number,
