@@ -166,15 +166,29 @@ async def generate_embeddings_batch(texts: list[str]) -> list[list[float]]:
 
     return await loop.run_in_executor(None, _run)
 
-def get_client():
-    if not LLM_URL:
-        raise RuntimeError("OVERMIND_LLM_URL is not set")
+def get_client() -> tuple[AsyncOpenAI, dict[str, Any]]:
+    """Build an AsyncOpenAI client and shared context dict.
 
-    client = AsyncOpenAI(
-        base_url=f"{LLM_URL}/v1",
-        api_key=os.environ.get("OVERMIND_LLM_API_KEY", "sk-not-needed"),
-        timeout=float(LLM_TIMEOUT_S),
-    )
+    Priority: OVERMIND_LLM_URL (custom endpoint) > OPENAI_API_KEY (OpenAI API).
+    Raises RuntimeError if neither is configured.
+    """
+    if LLM_URL:
+        client = AsyncOpenAI(
+            base_url=f"{LLM_URL}/v1",
+            api_key=os.environ.get("OVERMIND_LLM_API_KEY", "sk-not-needed"),
+            timeout=float(LLM_TIMEOUT_S),
+        )
+    elif os.environ.get("OPENAI_API_KEY"):
+        client = AsyncOpenAI(
+            api_key=os.environ["OPENAI_API_KEY"],
+            timeout=float(LLM_TIMEOUT_S),
+        )
+    else:
+        raise RuntimeError(
+            "No LLM configured. Set OVERMIND_LLM_URL (custom endpoint) "
+            "or OPENAI_API_KEY (OpenAI API)."
+        )
+
     ctx: dict[str, Any] = {
         "client": client,
         "db_pool": db_pool,
@@ -280,36 +294,57 @@ async def subagent_loop(client, ctx, task: PlannerTask, req_files: dict[str, str
     )
 
 
-async def build_eval_message(subagent_tasks: PlannerOutput, subagent_results: list[AgentResult]) -> list[dict[str, str]]:
-    messages = []
-    for i, task in enumerate(subagent_tasks):
-        messages.append(
-            {
-                "role": "user",
-                "content" : f"Task given:\n\t agent system-prompt:{task.system_prompt}\n\tuser-prompt:{task.user_prompt}\nAgent output:\n{subagent_results[i].summary}"
-            }
-        )        
+def build_eval_message(
+    tasks: PlannerOutput, results: list[AgentResult],
+) -> list[dict[str, str]]:
+    """Build evaluation messages pairing each task with its subagent result."""
+    messages: list[dict[str, str]] = []
+    for i, task in enumerate(tasks.tasks):
+        messages.append({
+            "role": "user",
+            "content": (
+                f"Task given:\n\tsystem-prompt: {task.system_prompt}"
+                f"\n\tuser-prompt: {task.user_prompt}"
+                f"\nAgent output:\n{results[i].summary}"
+            ),
+        })
     return messages
-async def agent_loop(client, ctx, subagent_tasks: PlannerOutput, req_files: dict[str, str], run_id: str) -> AgentResult:
+
+
+async def agent_loop(
+    client: AsyncOpenAI,
+    ctx: dict[str, Any],
+    subagent_tasks: PlannerOutput,
+    req_files: dict[str, str],
+    run_id: str,
+) -> AgentResult:
     """
-    TODO: Await on all subagents to terminate, then call planner_finished.
-    You will write this part!
+    Run parallel subagents for each planner task, then ask the planner to
+    evaluate results. The planner can either call planner_finished (done)
+    or draft-plan to re-plan and spawn another round of subagents.
+    Accumulates all file changes across rounds into a single workspace.
     """
+    pending_tasks = subagent_tasks
     workspace: dict[str, str] = {}
 
-    for _, round_num in range(MAX_AGENT_ROUNDS +1):
+    for round_num in range(1, MAX_AGENT_ROUNDS + 1):
         if await should_cancel(run_id):
             break
 
-        coroutines = [subagent_loop(client, ctx, subagent_task, req_files, run_id) for subagent_task in subagent_tasks.tasks]
+        log(f"agent_loop: run_id={run_id} round={round_num}/{MAX_AGENT_ROUNDS}")
+
+        coroutines = [
+            subagent_loop(client, ctx, task, req_files, run_id)
+            for task in pending_tasks.tasks
+        ]
         subagent_results: list[AgentResult] = await asyncio.gather(*coroutines)
-        # add FileChanges to workspace
+
         for res in subagent_results:
-            for p, c in res.files:
-                workspace[p] = c
-        
-        messages = await build_eval_message(subagent_tasks, subagent_results)
-        # compile AgentResults into one summary
+            for fc in res.files:
+                workspace[fc.path] = fc.content
+
+        messages = build_eval_message(pending_tasks, subagent_results)
+
         response = await client.chat.completions.create(
             model=MODEL_ID,
             messages=messages,
@@ -318,38 +353,56 @@ async def agent_loop(client, ctx, subagent_tasks: PlannerOutput, req_files: dict
             temperature=0.015,
         )
         msg = response.choices[0].message
-        # Preserve the assistant message (including tool_calls metadata).
         messages.append(msg.model_dump(exclude_none=True))
+
         if not msg.tool_calls:
-            break # it should call "finish"
-        tool_name = ""
+            log(f"agent_loop: no tool calls round={round_num}, finishing")
+            break
 
         for tc in msg.tool_calls:
+            tool_name = tc.function.name
+
             try:
                 args = json.loads(tc.function.arguments)
             except (json.JSONDecodeError, TypeError):
-                log(f"subagent_loop: bad tool args round={round_num}")
+                log(f"agent_loop: bad tool args round={round_num}")
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tc.id,
                     "content": "Error: malformed tool arguments",
                 })
                 continue
+
             if tool_name == "planner_finished":
                 summary = args.get("summary", "Changes applied")
-                log(f"subagent_loop: finished round={round_num}")
+                log(f"agent_loop: planner_finished round={round_num}")
                 return AgentResult(
                     summary=summary,
                     files=[
-                    FileChange(path=p, content=c)
-                    for p, c in sorted(workspace.items())
+                        FileChange(path=p, content=c)
+                        for p, c in sorted(workspace.items())
                     ],
                 )
-            elif tool_name == "draft-plan":
-                # re-generate plan
-                subagent_tasks = run_planner(client, )
-    
-    return AgentResult(summary="Task failed", files=[])
+
+            if tool_name == "draft-plan":
+                log(f"agent_loop: re-planning round={round_num}")
+                pending_tasks = await run_planner(
+                    client, args.get("plan", ""),
+                )
+
+        await update_run_record(run_id, {
+            "stage": STAGE_WORKING,
+            "detail": f"Planner round {round_num}",
+        })
+
+    log(f"agent_loop: run_id={run_id} exhausted {MAX_AGENT_ROUNDS} rounds")
+    return AgentResult(
+        summary="Agent completed (max rounds reached)",
+        files=[
+            FileChange(path=p, content=c)
+            for p, c in sorted(workspace.items())
+        ],
+    )
 
 
 async def run_worker(run_id: str, req: RunCreateRequest) -> None:
