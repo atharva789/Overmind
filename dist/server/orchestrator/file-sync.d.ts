@@ -11,6 +11,11 @@ export interface FilePack {
     includedPaths: string[];
 }
 /**
+ * Walk files under a directory with a depth cap.
+ * Does not traverse excluded directories.
+ */
+export declare function walkFiles(root: string, relative: string, depth: number, onFile: (relPath: string) => void): void;
+/**
  * Pack files for execution based on evaluation hints and scope.
  * Does not include the entire repository.
  */

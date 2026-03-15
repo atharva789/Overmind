@@ -14,6 +14,7 @@ import { buildAllowedPathChecker, normalizeRelativePath } from "./allowlist.js";
 import { sleep, summarizeChanges } from "./helpers.js";
 import { STAGE_ACQUIRE, STAGE_APPLY, STAGE_SPAWN, STAGE_SYNC, isAllowedRemoteStage, } from "./stages.js";
 import { WorkspaceFiles } from "./workspace.js";
+import { deriveProjectId } from "../../shared/project-id.js";
 const LOG_FILE = "orchestrator.log";
 const DEFAULT_STORY = "Overmind demo story: keep changes minimal, deterministic, and scoped.";
 export class Orchestrator {
@@ -141,6 +142,7 @@ export class Orchestrator {
             story,
             scope: [...evaluation.affectedFiles],
             files: { ...pack.files },
+            projectId: deriveProjectId(this.projectRoot),
         };
         return { payload, originals: { ...pack.originals } };
     }

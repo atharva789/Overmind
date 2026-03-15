@@ -15,10 +15,10 @@ from typing import Any
 
 from fastapi import HTTPException
 
-from codebase_indexer import average_vectors, cosine_similarity
-from utils import log
+from codebase_indexer import average_vectors
+from utils import log, to_pgvector_literal
 
-SIMILARITY_THRESHOLD = 0.97
+SIMILARITY_THRESHOLD = 0.715
 
 _BRANCH_UPSERT_SQL = """
     INSERT INTO branches (name, project_id)
@@ -76,7 +76,7 @@ async def resolve_similar_project(
     Edge cases: Raises HTTP 500 on DB query error; logs and skips malformed rows.
     Invariants: Always returns a non-empty project ID string.
     """
-    centroid_str = "[" + ",".join(str(x) for x in new_centroid) + "]"
+    centroid_str = to_pgvector_literal(new_centroid)
     try:
         async with db_pool.acquire() as conn:
             # Use pgvector's native cosine operator — computed in DB, no raw vector transfer.
@@ -131,7 +131,7 @@ async def upsert_branch_and_chunks(
             chunk["chunk_name"],
             chunk["start_line"],
             chunk["end_line"],
-            "[" + ",".join(str(x) for x in emb) + "]",
+            to_pgvector_literal(emb),
         )
         for chunk, emb in zip(all_chunks, embeddings)
     ]

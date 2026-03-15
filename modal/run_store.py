@@ -1,10 +1,9 @@
 """
 Purpose: Manage run lifecycle records with a swappable storage backend.
-High-level behavior: Provides typed read/write/update helpers for RunStatusRecord
-  objects. Backend is selected by RUN_STORE_BACKEND env var: "modal" (default)
-  uses Modal Dict; "memory" uses an in-process dict (suitable for AWS/local).
-Assumptions: "modal" backend requires Modal to be installed and authenticated.
-  "memory" backend loses state on process restart.
+High-level behavior: Provides typed read/write/update helpers for RunStatusRecord.
+  Backend is selected by RUN_STORE_BACKEND env var: "memory" (default) uses an
+  in-process dict; "dynamodb" is reserved for your AWS DynamoDB implementation.
+Assumptions: "memory" backend loses state on process restart.
 Invariants: Every write refreshes updatedAt. Records are never deleted, only
   overwritten. Status transitions are enforced by callers, not this module.
 """
@@ -62,7 +61,7 @@ class RunStatusRecord(BaseModel):
 
 
 class _MemoryStore:
-    """In-process dict store. State is lost on restart. For AWS/local use."""
+    """In-process dict store. State is lost on restart."""
 
     def __init__(self) -> None:
         self._data: dict[str, Any] = {}
@@ -74,31 +73,20 @@ class _MemoryStore:
         self._data[key] = value
 
 
-class _ModalStore:
-    """Modal Dict store. Persists across Modal function invocations."""
-
-    def __init__(self) -> None:
-        import modal
-        self._dict = modal.Dict.from_name(
-            "overmind-orchestrator-runs", create_if_missing=True
-        )
-
-    async def get(self, key: str) -> Any:
-        return await self._dict.get.aio(key)
-
-    async def put(self, key: str, value: Any) -> None:
-        await self._dict.put.aio(key, value)
+_store: "_MemoryStore | None" = None
 
 
-# Lazily initialized — avoids importing modal at module scope on non-Modal hosts.
-_store: "_MemoryStore | _ModalStore | None" = None
-
-
-def _get_store() -> "_MemoryStore | _ModalStore":
+def _get_store() -> "_MemoryStore":
     global _store
     if _store is None:
-        backend = os.environ.get("RUN_STORE_BACKEND", "modal")
-        _store = _ModalStore() if backend == "modal" else _MemoryStore()
+        backend = os.environ.get("RUN_STORE_BACKEND", "memory")
+        if backend == "memory":
+            _store = _MemoryStore()
+        else:
+            raise ValueError(
+                f"Unknown RUN_STORE_BACKEND: {backend}. "
+                f"Implement your backend and register it here."
+            )
     return _store
 
 
@@ -147,10 +135,8 @@ async def update_run_record(run_id: str, updates: dict[str, Any]) -> None:
     Invariants: updatedAt is always refreshed.
     """
     record = await read_run_record(run_id)
-    data = run_record_to_dict(record)
-    data.update(updates)
-    data["updatedAt"] = now_iso()
-    await write_run_record(run_id, RunStatusRecord(**data))
+    updated = record.model_copy(update={**updates, "updatedAt": now_iso()})
+    await write_run_record(run_id, updated)
 
 
 async def should_cancel(run_id: str) -> bool:

@@ -11,6 +11,7 @@ export interface RunCreatePayload {
     story: string;
     scope: string[];
     files: Record<string, string>;
+    projectId: string;
 }
 export interface RunStatus {
     status: "queued" | "running" | "completed" | "failed" | "canceled";

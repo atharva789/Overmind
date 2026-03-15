@@ -2,38 +2,36 @@ import { GoogleGenAI } from "@google/genai";
 import fs from "node:fs";
 import path from "node:path";
 import { EXECUTION_TOOL_DECLARATIONS, WorkspaceContext } from "./tools.js";
-import { GEMINI_MODEL_DEFAULT } from "../../shared/constants.js";
+import { GEMINI_MODEL_DEFAULT, getProjectRoot } from "../../shared/constants.js";
+import { walkFiles } from "../orchestrator/file-sync.js";
 const MAX_EXECUTION_ROUNDS = 25;
 const EXECUTION_TIMEOUT_MS = 120000;
 const MAX_FILE_SIZE = 50000;
-const EXCLUDED_DIRS = new Set(["node_modules", ".git", "dist", ".overmind", "modal-bridge"]);
-function collectProjectFiles(dir, relative, depth) {
+function collectProjectFiles(projectRoot, scopeFiles) {
     const result = {};
-    if (depth > 4)
-        return result;
-    let entries;
-    try {
-        entries = fs.readdirSync(path.join(dir, relative), { withFileTypes: true });
-    }
-    catch {
-        return result;
-    }
-    for (const entry of entries) {
-        const rel = relative ? `${relative}/${entry.name}` : entry.name;
-        if (entry.isDirectory()) {
-            if (EXCLUDED_DIRS.has(entry.name))
-                continue;
-            Object.assign(result, collectProjectFiles(dir, rel, depth + 1));
-        }
-        else if (entry.isFile()) {
+    if (scopeFiles && scopeFiles.length > 0) {
+        // Read only the files identified by scope extraction
+        for (const rel of scopeFiles) {
             try {
-                const content = fs.readFileSync(path.join(dir, rel), "utf-8");
+                const content = fs.readFileSync(path.join(projectRoot, rel), "utf-8");
                 if (content.length <= MAX_FILE_SIZE) {
                     result[rel] = content;
                 }
             }
             catch { /* skip unreadable */ }
         }
+    }
+    else {
+        // Fallback: walk the entire project tree
+        walkFiles(projectRoot, ".", 0, (relPath) => {
+            try {
+                const content = fs.readFileSync(path.join(projectRoot, relPath), "utf-8");
+                if (content.length <= MAX_FILE_SIZE) {
+                    result[relPath] = content;
+                }
+            }
+            catch { /* skip unreadable */ }
+        });
     }
     return result;
 }
@@ -53,8 +51,8 @@ export async function executePromptChanges(entry, partyCode, log) {
     }
     const modelName = process.env["OVERMIND_MODEL"] ?? GEMINI_MODEL_DEFAULT;
     const ai = new GoogleGenAI({ apiKey });
-    const projectRoot = process.env["OVERMIND_PROJECT_ROOT"] ?? process.cwd();
-    const projectFiles = collectProjectFiles(projectRoot, "", 0);
+    const projectRoot = getProjectRoot();
+    const projectFiles = collectProjectFiles(projectRoot, entry.scope);
     const fileContents = Object.entries(projectFiles)
         .map(([p, c]) => `=== ${p} ===\n${c}`)
         .join("\n\n");

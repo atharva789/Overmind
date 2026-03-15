@@ -1,0 +1,32 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "SageMakerEndpointCleanup",
+      "Effect": "Allow",
+      "Action": [
+        "sagemaker:ListEndpoints",
+        "sagemaker:DeleteEndpoint",
+        "sagemaker:DeleteEndpointConfig",
+        "sagemaker:DeleteModel"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "SNSNotifications",
+      "Effect": "Allow",
+      "Action": "sns:Publish",
+      "Resource": "arn:aws:sns:us-east-1:048270140082:sagemaker-budget-alarm"
+    },
+    {
+      "Sid": "CloudWatchLogs",
+      "Effect": "Allow",
+      "Action": [
+        "logs:CreateLogGroup",
+        "logs:CreateLogStream",
+        "logs:PutLogEvents"
+      ],
+      "Resource": "arn:aws:logs:us-east-1:048270140082:*"
+    }
+  ]
+}

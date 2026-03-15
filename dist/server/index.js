@@ -20,7 +20,7 @@ import { executePromptChanges } from "./execution/agent.js";
 const generateConnectionId = customAlphabet("abcdefghijklmnopqrstuvwxyz0123456789", CONNECTION_ID_LENGTH);
 const generatePartyCode = customAlphabet(PARTY_CODE_ALPHABET, PARTY_CODE_LENGTH);
 // ─── State ───
-const PROJECT_ROOT = process.cwd();
+const PROJECT_ROOT = process.env["OVERMIND_PROJECT_ROOT"] ?? process.cwd();
 const parties = new Map();
 const evalQueues = new Map();
 const pendingParties = new Map();
