@@ -1,0 +1,62 @@
+{
+  "family": "overmind-task",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "1024",
+  "memory": "2048",
+  "executionRoleArn": "arn:aws:iam::048270140082:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::048270140082:role/ecsTaskRole",
+  "containerDefinitions": [
+    {
+      "name": "overmind-container",
+      "image": "048270140082.dkr.ecr.us-east-2.amazonaws.com/overmind-orchestrator-repo:v1.0",
+      "essential": true,
+      "portMappings": [
+        {
+          "containerPort": 8000,
+          "protocol": "tcp"
+        }
+      ],
+      "environment": [
+        { "name": "MODEL_ID", "value": "openai/gpt-oss-20b" },
+        { "name": "OVERMIND_EMBEDDING_MODEL", "value": "BAAI/bge-large-en-v1.5" },
+        { "name": "RUN_STORE_BACKEND", "value": "memory" },
+        { "name": "PORT", "value": "8000" }
+      ],
+      "secrets": [
+        {
+          "name": "OVERMIND_LLM_URL",
+          "valueFrom": "arn:aws:ssm:us-east-2:048270140082:parameter/overmind/llm-url"
+        },
+        {
+          "name": "OVERMIND_LLM_API_KEY",
+          "valueFrom": "arn:aws:ssm:us-east-2:048270140082:parameter/overmind/llm-api-key"
+        },
+        {
+          "name": "OPENAI_API_KEY",
+          "valueFrom": "arn:aws:ssm:us-east-2:048270140082:parameter/overmind/openai-api-key"
+        },
+        {
+          "name": "OVERMIND_DATABASE_URL",
+          "valueFrom": "arn:aws:ssm:us-east-2:048270140082:parameter/overmind/database-url"
+        }
+      ],
+      "healthCheck": {
+        "command": ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"],
+        "interval": 30,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 120
+      },
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/overmind",
+          "awslogs-region": "us-east-2",
+          "awslogs-stream-prefix": "ecs",
+          "awslogs-create-group": "true"
+        }
+      }
+    }
+  ]
+}
