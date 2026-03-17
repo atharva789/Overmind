@@ -12,8 +12,8 @@ import { WebSocketServer } from "ws";
 export declare function setMaxMembers(n: number): void;
 export declare function reserveParty(hostUsername: string): string;
 /**
- * Start the WebSocket server and initialize bridge checks.
- * Does not block on bridge health; runs asynchronously.
+ * Start the WebSocket server and initialize orchestrator health checks.
+ * Does not block on health checks; runs asynchronously.
  */
 export declare function startServer(): WebSocketServer;
 /**

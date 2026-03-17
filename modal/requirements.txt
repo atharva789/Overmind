@@ -1,92 +1,96 @@
-aiohappyeyeballs==2.6.1
-aiohttp==3.13.3
-aiosignal==1.4.0
-annotated-doc==0.0.4
-annotated-types==0.7.0
-anyio==4.12.1
-asyncpg==0.31.0
-attrs==25.4.0
-boto3==1.42.66
-botocore==1.42.66
-cbor2==5.8.0
-certifi==2026.2.25
-charset-normalizer==3.4.5
-click==8.3.1
-distro==1.9.0
-fastapi==0.135.1
-fastembed==0.7.4
-filelock==3.25.2
-flatbuffers==25.12.19
-frozenlist==1.8.0
-fsspec==2026.2.0
-grpclib==0.4.9
-h11==0.16.0
-h2==4.3.0
-hf-xet==1.4.0
-hpack==4.1.0
-httpcore==1.0.9
-httpx==0.28.1
-huggingface_hub==1.6.0
-hyperframe==6.1.0
-idna==3.11
-Jinja2==3.1.6
-jiter==0.13.0
-jmespath==1.1.0
-joblib==1.5.3
-loguru==0.7.3
-markdown-it-py==4.0.0
-MarkupSafe==3.0.3
-mdurl==0.1.2
-mmh3==5.2.1
-modal==1.3.5
-mpmath==1.3.0
-multidict==6.7.1
-networkx==3.6.1
-numpy==2.4.3
-onnxruntime==1.24.3
-openai==2.26.0
-packaging==26.0
-pillow==11.3.0
-propcache==0.4.1
-protobuf==6.33.5
-py_rust_stemmers==0.1.5
-pydantic==2.12.5
-pydantic_core==2.41.5
-Pygments==2.19.2
-python-dateutil==2.9.0.post0
-PyYAML==6.0.3
-regex==2026.2.28
-requests==2.32.5
-rich==14.3.3
-s3transfer==0.16.0
-safetensors==0.7.0
-scikit-learn==1.8.0
-scipy==1.17.1
-sentence-transformers==5.2.3
-setuptools==82.0.1
-shellingham==1.5.4
-six==1.17.0
-sniffio==1.3.1
-starlette==0.52.1
-sympy==1.14.0
-synchronicity==0.11.1
-threadpoolctl==3.6.0
-tokenizers==0.22.2
-toml==0.10.2
-torch==2.10.0
-tqdm==4.67.3
-transformers==5.3.0
-tree-sitter==0.25.2
-tree-sitter-go==0.25.0
-tree-sitter-javascript==0.25.0
-tree-sitter-python==0.25.0
-tree-sitter-typescript==0.23.2
-typer==0.24.1
-types-certifi==2021.10.8.3
-types-toml==0.10.8.20240310
-typing-inspection==0.4.2
-typing_extensions==4.15.0
-urllib3==2.6.3
-watchfiles==1.1.1
-wheel==0.46.3
-yarl==1.23.0
+# =============================================================================
+# Overmind Orchestrator — Production Dependencies
+# =============================================================================
+# Curated for ECS Fargate deployment. Removed ~2.5GB of unused packages
+# (torch, sentence-transformers, transformers, scipy, scikit-learn, pillow).
+#
+# fastembed uses ONNX Runtime for inference — torch is NOT needed.
+# Supabase PostgreSQL works via standard asyncpg — no special SDK needed.
+# boto3 is included for AWS SDK access (SSM Parameter Store, future S3/DynamoDB).
+# =============================================================================
+
+# --- Web framework + server ---------------------------------------------------
+fastapi==0.135.1              # ASGI framework — orchestrator endpoints
+starlette==0.52.1             # fastapi dependency (ASGI toolkit)
+uvicorn==0.34.3               # ASGI server — runs the FastAPI app
+h11==0.16.0                   # uvicorn HTTP/1.1 parser
+
+# --- Data validation ----------------------------------------------------------
+pydantic==2.12.5              # Request/response models, agent schemas
+pydantic_core==2.41.5         # pydantic C extension
+annotated-types==0.7.0        # pydantic dependency
+typing-inspection==0.4.2      # pydantic dependency
+typing_extensions==4.15.0     # backport of typing features
+
+# --- HTTP client --------------------------------------------------------------
+httpx==0.28.1                 # Async HTTP client — LLM health checks, agent network tool
+httpcore==1.0.9               # httpx transport layer
+h2==4.3.0                     # HTTP/2 support for httpx
+hpack==4.1.0                  # h2 dependency (HPACK header compression)
+hyperframe==6.1.0             # h2 dependency (HTTP/2 framing)
+certifi==2026.2.25            # TLS root certificates
+idna==3.11                    # Internationalized domain names
+sniffio==1.3.1                # Async library detection
+anyio==4.12.0                 # Async compatibility layer (httpx, openai)
+
+# --- OpenAI SDK ---------------------------------------------------------------
+openai==2.26.0                # AsyncOpenAI client — LLM tool-calling loop
+distro==1.9.0                 # openai dependency (OS detection)
+jiter==0.13.0                 # openai dependency (fast JSON parsing)
+
+# --- Database (PostgreSQL / Supabase) -----------------------------------------
+asyncpg==0.31.0               # Native PostgreSQL driver — Supabase connection
+                              # ssl="require" satisfies Supabase TLS requirement
+                              # No Supabase SDK needed — it's standard PostgreSQL
+
+# --- Embeddings (fastembed + ONNX) --------------------------------------------
+fastembed==0.7.4              # BAAI/bge-large-en-v1.5 via ONNX (NO torch needed)
+onnxruntime==1.24.3           # ONNX inference engine — fastembed backend
+numpy==2.4.3                  # Vector math — average_vectors in codebase_indexer
+flatbuffers==25.12.19         # onnxruntime dependency
+protobuf==6.33.5              # onnxruntime dependency
+packaging==26.0               # onnxruntime/fastembed dependency
+mmh3==5.2.1                   # fastembed dependency (MurmurHash)
+py_rust_stemmers==0.1.5       # fastembed dependency (text stemming)
+
+# --- Hugging Face Hub (model downloads) ---------------------------------------
+huggingface_hub==1.6.0        # fastembed downloads models from HF Hub
+filelock==3.25.2              # HF Hub dependency (model cache locks)
+fsspec==2026.2.0              # HF Hub dependency (filesystem abstraction)
+hf-xet==1.4.0                # HF Hub dependency (Xet storage backend)
+requests==2.32.5              # HF Hub dependency (HTTP downloads)
+charset-normalizer==3.4.5     # requests dependency
+urllib3==2.6.3                # requests dependency
+tqdm==4.67.3                  # HF Hub dependency (download progress bars)
+PyYAML==6.0.3                 # HF Hub dependency (model config parsing)
+
+# --- Code parsing (tree-sitter) -----------------------------------------------
+tree-sitter==0.25.2           # AST parser — codebase_indexer chunk extraction
+tree-sitter-python==0.25.0    # Python grammar
+tree-sitter-typescript==0.23.2 # TypeScript + TSX grammars
+tree-sitter-javascript==0.25.0 # JavaScript grammar
+tree-sitter-go==0.25.0        # Go grammar
+
+# --- AWS SDK ------------------------------------------------------------------
+boto3==1.42.66                # AWS SDK — SSM Parameter Store, future S3/DynamoDB
+botocore==1.42.66             # boto3 core (low-level AWS API)
+jmespath==1.1.0               # boto3 dependency (JSON query language)
+s3transfer==0.16.0            # boto3 dependency (S3 transfer utilities)
+python-dateutil==2.9.0.post0  # botocore dependency
+six==1.17.0                   # python-dateutil dependency
+
+# --- Async utilities ----------------------------------------------------------
+aiohttp==3.13.3               # async HTTP (fastembed/HF downloads)
+aiohappyeyeballs==2.6.1       # aiohttp dependency
+aiosignal==1.4.0              # aiohttp dependency
+attrs==25.4.0                 # aiohttp dependency
+frozenlist==1.8.0             # aiohttp dependency
+multidict==6.7.1              # aiohttp dependency
+propcache==0.4.1              # aiohttp dependency
+yarl==1.23.0                  # aiohttp dependency
+
+# --- Misc shared deps ---------------------------------------------------------
+regex==2026.2.28              # fastembed tokenizer dependency
+toml==0.10.2                  # config parsing
+cbor2==5.8.0                  # fastembed/HF serialization
+setuptools==82.0.1            # pkg_resources (runtime dependency for some libs)
