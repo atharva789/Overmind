@@ -1,9 +1,9 @@
 /**
- * Purpose: Call the Modal-deployed vLLM endpoint to resolve merge conflicts.
+ * Purpose: Call the LLM endpoint to resolve merge conflicts.
  * High-level behavior: Resolves each conflicting file via HTTP POST to the
- *   Modal inference endpoint. Retries once on failure. Falls back to the
- *   "ours" side of each conflict block when Modal is unavailable.
- * Assumptions: CONFLICT_RESOLVER_URL points to a running Modal endpoint.
+ *   inference endpoint (OVERMIND_LLM_URL). Retries once on failure. Falls back
+ *   to the "ours" side of each conflict block when the endpoint is unavailable.
+ * Assumptions: OVERMIND_LLM_URL points to a running OpenAI-compatible endpoint.
  * Invariants: Never throws. Always returns a FileResolution. Logs are
  *   truncated to avoid leaking full file content.
  */
@@ -11,7 +11,7 @@
 import { appendFileSync } from "fs";
 import type { ConflictingFile, FileResolution } from "./types.js";
 
-const MODAL_ENDPOINT = process.env["CONFLICT_RESOLVER_URL"];
+const LLM_ENDPOINT = process.env["OVERMIND_LLM_URL"];
 const LOG_PATH = "orchestrator.log";
 const TRUNCATE = 200;
 
@@ -34,20 +34,20 @@ export async function resolveFile(
     file: ConflictingFile,
     storyMd: string
 ): Promise<FileResolution> {
-    if (!MODAL_ENDPOINT) {
-        log("CONFLICT_RESOLVER_URL not set — using fallback");
+    if (!LLM_ENDPOINT) {
+        log("OVERMIND_LLM_URL not set — using fallback");
         return fallback(
             file,
-            "CONFLICT_RESOLVER_URL environment variable not set"
+            "OVERMIND_LLM_URL environment variable not set"
         );
     }
 
-    log(`Resolving ${file.path} via Modal inference...`);
+    log(`Resolving ${file.path} via LLM inference...`);
 
     for (let attempt = 1; attempt <= 2; attempt++) {
         try {
             const response = await fetch(
-                `${MODAL_ENDPOINT}/resolve`,
+                `${LLM_ENDPOINT}/resolve`,
                 {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
@@ -78,7 +78,7 @@ export async function resolveFile(
                 !data.resolved_code ||
                 data.resolved_code.trim().length === 0
             ) {
-                throw new Error("Modal returned empty resolved_code");
+                throw new Error("LLM returned empty resolved_code");
             }
 
             const markers = ["<<<<<<<", "=======", ">>>>>>>"];
@@ -120,7 +120,7 @@ export async function resolveFile(
 
 /**
  * Resolve all conflicting files sequentially to avoid overwhelming
- * the Modal inference endpoint with concurrent requests.
+ * the LLM inference endpoint with concurrent requests.
  */
 export async function resolveAllConflicts(
     files: ConflictingFile[],
@@ -174,12 +174,12 @@ function fallback(
         path: file.path,
         resolvedContent: resolved.trimEnd(),
         reasoning:
-            `Modal inference unavailable (${reason.slice(0, 100)}). ` +
+            `LLM inference unavailable (${reason.slice(0, 100)}). ` +
             `Defaulted to 'ours' side of every conflict. ` +
             `Manual review required.`,
         confidence: "low",
         issues: [
-            "Modal inference fallback used — review all changes carefully",
+            "LLM inference fallback used — review all changes carefully",
         ],
     };
 }

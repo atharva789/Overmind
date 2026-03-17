@@ -1,5 +1,5 @@
 /**
- * Purpose: Send host project files to Modal for chunking and embedding.
+ * Purpose: Send host project files to the orchestrator for chunking and embedding.
  * High-level behavior: Walks workspace files and POSTs to /initialize_codebase.
  * Assumptions: Only called when OVERMIND_ORCHESTRATOR_URL is set.
  * Invariants: Never throws — logs and returns null on any failure.
@@ -20,7 +20,6 @@ const EXCLUDED_DIRS = new Set([
     ".git",
     "dist",
     ".overmind",
-    "modal-bridge",
 ]);
 
 const MAX_WALK_DEPTH = 4;
@@ -75,7 +74,7 @@ function packWorkspaceFiles(projectRoot: string): Record<string, string> {
 }
 
 /**
- * POST project files to Modal's /initialize_codebase endpoint.
+ * POST project files to the orchestrator's /initialize_codebase endpoint.
  * Returns null (and logs) on any error — never throws.
  */
 export async function initializeCodebase(

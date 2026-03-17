@@ -3,8 +3,7 @@
   "version": "0.1.0",
   "type": "module",
   "bin": {
-    "overmind": "dist/cli.js",
-    "overmind-deploy": "tools/modal-deploy.sh"
+    "overmind": "dist/cli.js"
   },
   "engines": {
     "node": ">=20"

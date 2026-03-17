@@ -27,7 +27,7 @@ export type ErrorCodeValue =
 
 // ─── Filesystem ───
 export const EXCLUDED_DIRS = new Set([
-    "node_modules", ".git", "dist", ".overmind", "modal-bridge",
+    "node_modules", ".git", "dist", ".overmind",
 ]);
 export function getProjectRoot(): string {
     return process.env["OVERMIND_PROJECT_ROOT"] ?? process.cwd();
@@ -69,12 +69,8 @@ function envNum(key: string, fallback: number): number {
     return v !== undefined ? Number(v) : fallback;
 }
 
-// ─── Modal bridge ───
-export function get_MODAL_BRIDGE_PORT(): number { return envNum("OVERMIND_BRIDGE_PORT", 8377); }
-export function get_MODAL_BRIDGE_URL(): string { return `http://localhost:${get_MODAL_BRIDGE_PORT()}`; }
-
-// ─── Merge conflict solver ───
-export function get_CONFLICT_RESOLVER_URL(): string { return env("CONFLICT_RESOLVER_URL"); }
+// ─── Merge conflict solver (uses the same LLM endpoint as the orchestrator) ───
+export function get_CONFLICT_RESOLVER_URL(): string { return env("OVERMIND_LLM_URL"); }
 export function get_GITHUB_TOKEN(): string { return env("GITHUB_TOKEN"); }
 export function get_GITHUB_REPO(): string { return env("GITHUB_REPO"); }
 export function get_GITHUB_BASE_BRANCH(): string { return env("GITHUB_BASE_BRANCH", "main"); }
@@ -105,10 +101,7 @@ export function get_ALWAYS_SYNC_PATTERNS(): string[] {
 }
 
 // ─── Backward-compatible aliases (lazy via getter) ───
-// These exist so existing code that imports e.g. MODAL_BRIDGE_PORT still works.
 // The value is read fresh from process.env on every access.
-export { get_MODAL_BRIDGE_PORT as MODAL_BRIDGE_PORT };
-export { get_MODAL_BRIDGE_URL as MODAL_BRIDGE_URL };
 export { get_CONFLICT_RESOLVER_URL as CONFLICT_RESOLVER_URL };
 export { get_GITHUB_TOKEN as GITHUB_TOKEN };
 export { get_GITHUB_REPO as GITHUB_REPO };

@@ -8,7 +8,6 @@
 import { WebSocketServer, WebSocket } from "ws";
 import { deriveProjectId } from "../shared/project-id.js";
 import { customAlphabet } from "nanoid";
-import { spawn, type ChildProcess } from "node:child_process";
 import { Party } from "./party.js";
 import type { PromptEntry } from "./party.js";
 import { parseClientMessage } from "../shared/protocol.js";
@@ -20,8 +19,6 @@ import {
     PARTY_CODE_ALPHABET,
     PARTY_CODE_LENGTH,
     MAX_MEMBERS_DEFAULT,
-    MODAL_BRIDGE_URL,
-    MODAL_BRIDGE_PORT,
     BRIDGE_HEALTH_INTERVAL_MS,
     OVERMIND_ORCHESTRATOR_URL,
     ErrorCode,
@@ -32,7 +29,6 @@ import { initDb, pool } from "./db.js";
 import { checkAndRunStoryAgent } from "./story/agent.js";
 import { solveMergeConflicts } from "./merge/index.js";
 import { extractScope } from "./execution/scope.js";
-import { executePromptChanges } from "./execution/agent.js";
 
 const generateConnectionId = customAlphabet(
     "abcdefghijklmnopqrstuvwxyz0123456789",
@@ -56,8 +52,7 @@ const pendingExecutions: Map<string, PendingExecution[]> = new Map();
 
 let maxMembers = MAX_MEMBERS_DEFAULT;
 let executionBackendAvailable = false;
-let bridgeProcess: ChildProcess | null = null;
-let bridgeHealthTimer: NodeJS.Timeout | null = null;
+let healthTimer: NodeJS.Timeout | null = null;
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -85,18 +80,10 @@ function log(msg: string, partyCode?: string): void {
 }
 
 /**
- * Decide whether execution should run locally or via Modal.
- * Does not verify that the local agent command exists.
- */
-function isLocalMode(): boolean {
-    return process.env["OVERMIND_LOCAL"] === "1";
-}
-
-/**
  * Decide whether remote orchestrator mode is enabled.
  * Does not validate the URL.
  */
-function isRemoteOrchestratorEnabled(): boolean {
+function isOrchestratorEnabled(): boolean {
     return OVERMIND_ORCHESTRATOR_URL().trim().length > 0;
 }
 
@@ -140,7 +127,7 @@ function sendSystemStatus(party: Party, connectionId: string): void {
         type: "system-status",
         payload: {
             executionBackendAvailable:
-                executionBackendAvailable || isLocalMode(),
+                executionBackendAvailable,
         },
     });
 }
@@ -155,97 +142,39 @@ function broadcastSystemStatus(): void {
             type: "system-status",
             payload: {
                 executionBackendAvailable:
-                    executionBackendAvailable || isLocalMode(),
+                    executionBackendAvailable,
             },
         });
     }
 }
 
 /**
- * Start execution health checks for the active backend.
+ * Start health checks for the remote orchestrator.
  * Does not throw; failures mark execution backend unavailable.
  */
-async function initBridge(): Promise<void> {
-    if (isLocalMode()) {
-        setExecutionBackendAvailable(true);
+async function initOrchestratorHealth(): Promise<void> {
+    if (!isOrchestratorEnabled()) {
+        log("No OVERMIND_ORCHESTRATOR_URL configured — execution unavailable");
+        setExecutionBackendAvailable(false);
         return;
     }
 
-    if (isRemoteOrchestratorEnabled()) {
-        await checkRemoteOrchestratorHealth();
+    await checkOrchestratorHealth();
 
-        if (bridgeHealthTimer) {
-            clearInterval(bridgeHealthTimer);
-        }
-
-        bridgeHealthTimer = setInterval(() => {
-            void checkRemoteOrchestratorHealth();
-        }, BRIDGE_HEALTH_INTERVAL_MS);
-        return;
+    if (healthTimer) {
+        clearInterval(healthTimer);
     }
 
-    spawnBridgeProcess();
-    await checkBridgeHealth();
-
-    if (bridgeHealthTimer) {
-        clearInterval(bridgeHealthTimer);
-    }
-
-    bridgeHealthTimer = setInterval(() => {
-        void checkBridgeHealth();
+    healthTimer = setInterval(() => {
+        void checkOrchestratorHealth();
     }, BRIDGE_HEALTH_INTERVAL_MS);
-}
-
-/**
- * Spawn the Modal bridge as a child process.
- * Does not guarantee the process is healthy.
- */
-function spawnBridgeProcess(): void {
-    if (bridgeProcess) return;
-
-    bridgeProcess = spawn(
-        "python3",
-        ["-m", "uvicorn", "bridge:app", "--port", String(MODAL_BRIDGE_PORT())],
-        {
-            cwd: "modal-bridge",
-            env: { ...process.env },
-            stdio: "ignore",
-        }
-    );
-
-    bridgeProcess.on("error", (err: Error) => {
-        log(`Bridge process error: ${err.message}`);
-        setExecutionBackendAvailable(false);
-    });
-
-    bridgeProcess.on("exit", (code) => {
-        log(`Bridge process exited (${code ?? "?"})`);
-        bridgeProcess = null;
-        setExecutionBackendAvailable(false);
-    });
-}
-
-/**
- * Check bridge health endpoint and update execution availability.
- * Does not throw; failures mark execution backend unavailable.
- */
-async function checkBridgeHealth(): Promise<void> {
-    try {
-        const res = await fetch(`${MODAL_BRIDGE_URL()}/health`);
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = (await res.json()) as { modal_connected?: boolean };
-        setExecutionBackendAvailable(Boolean(data.modal_connected));
-    } catch (err) {
-        log(`Bridge health check failed: ${String(err)}`);
-        setExecutionBackendAvailable(false);
-    }
 }
 
 /**
  * Check remote orchestrator health and update availability.
  * Does not throw; failures mark execution unavailable.
  */
-async function checkRemoteOrchestratorHealth(): Promise<void> {
+async function checkOrchestratorHealth(): Promise<void> {
     const url = buildRemoteOrchestratorHealthUrl();
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 5000);
@@ -274,12 +203,12 @@ export function reserveParty(hostUsername: string): string {
 // ─── Server ───
 
 /**
- * Start the WebSocket server and initialize bridge checks.
- * Does not block on bridge health; runs asynchronously.
+ * Start the WebSocket server and initialize orchestrator health checks.
+ * Does not block on health checks; runs asynchronously.
  */
 export function startServer(): WebSocketServer {
     const port = Number(process.env["OVERMIND_PORT"]) || DEFAULT_PORT;
-    void initBridge();
+    void initOrchestratorHealth();
 
     initDb()
         .then(() => {
@@ -849,7 +778,7 @@ export function startServer(): WebSocketServer {
     }
 }
 
-// ─── Sequential execution queue per party (Modal or local) ───
+// ─── Sequential execution queue per party ───
 /**
  * Build a minimal evaluation result when host approves without metadata.
  * Does not infer affected files beyond explicit scope hints.
@@ -890,7 +819,7 @@ function enqueueExecution(
 
     // Let the greenlight verdict UI linger for 1.2 seconds
     setTimeout(() => {
-        if (!executionBackendAvailable && !isLocalMode()) {
+        if (!executionBackendAvailable) {
             queuePendingExecution(party.code, entry, evaluation);
             return;
         }
@@ -918,7 +847,7 @@ function queuePendingExecution(
  * Does not block; executions run asynchronously.
  */
 function drainPendingExecutions(): void {
-    if (!executionBackendAvailable && !isLocalMode()) return;
+    if (!executionBackendAvailable) return;
 
     for (const [partyCode, queue] of pendingExecutions) {
         if (queue.length === 0) continue;
@@ -944,33 +873,6 @@ async function runExecutionFlow(
     entry: PromptEntry,
     evaluation: EvaluationResult
 ): Promise<void> {
-    if (isLocalMode()) {
-        handleExecutionEvent(party, entry, {
-            type: "stage",
-            stage: "Agent is working...",
-        });
-
-        const result = await executePromptChanges(entry, party.code, log);
-
-        if (result.success) {
-            handleExecutionEvent(party, entry, {
-                type: "complete",
-                result: {
-                    promptId: entry.promptId,
-                    files: result.files,
-                    summary: result.summary,
-                },
-            });
-        } else {
-            handleExecutionEvent(party, entry, {
-                type: "error",
-                message: result.summary,
-                recoverable: false,
-            });
-        }
-        return;
-    }
-
     const orchestrator = orchestrators.get(party.code);
     if (!orchestrator) {
         party.sendTo(entry.connectionId, {
@@ -1171,13 +1073,8 @@ export function shutdownAllParties(): void {
     pendingEvaluations.clear();
     orchestrators.clear();
 
-    if (bridgeHealthTimer) {
-        clearInterval(bridgeHealthTimer);
-        bridgeHealthTimer = null;
-    }
-
-    if (bridgeProcess) {
-        bridgeProcess.kill();
-        bridgeProcess = null;
+    if (healthTimer) {
+        clearInterval(healthTimer);
+        healthTimer = null;
     }
 }

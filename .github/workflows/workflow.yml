@@ -1,0 +1,49 @@
+name: build-and-push-orchestrator
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - thorba-iterate
+    paths:
+      - "modal/**"
+    tags:
+      - "v*"
+  pull_request:
+    branches:
+      - thorba-iterate
+    paths:
+      - "modal/**"
+jobs:
+    build:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+            - name: configure-aws-creds
+              uses: aws-actions/configure-aws-credentials@v4
+              with:
+                aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+                aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+                aws-region: us-east-2
+            - name: login-to-aws-ecr
+              id: ecr-login
+              uses: aws-actions/amazon-ecr-login@v2
+            - name: set-image-tag
+              id: tag
+              run: |
+                if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+                    echo "TAG=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+                else
+                    echo "TAG=sha-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+                fi
+            - name: build-tag-push-to-ecr
+              env:
+                ECR_REPO: 048270140082.dkr.ecr.us-east-2.amazonaws.com/overmind-orchestrator-repo
+                IMAGE_TAG: ${{ steps.tag.outputs.TAG }}
+              run: |
+                docker build \
+                  -f modal/.Dockerfile \
+                  -t $ECR_REPO:$IMAGE_TAG \
+                  -t $ECR_REPO:latest \
+                  modal/
+                docker push $ECR_REPO:$IMAGE_TAG
+                docker push $ECR_REPO:latest
