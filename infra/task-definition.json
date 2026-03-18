@@ -9,7 +9,7 @@
   "containerDefinitions": [
     {
       "name": "overmind-container",
-      "image": "048270140082.dkr.ecr.us-east-2.amazonaws.com/overmind-orchestrator-repo:v1.0",
+      "image": "048270140082.dkr.ecr.us-east-2.amazonaws.com/overmind-orchestrator-repo:v2.0",
       "essential": true,
       "portMappings": [
         {
@@ -18,27 +18,41 @@
         }
       ],
       "environment": [
-        { "name": "MODEL_ID", "value": "openai/gpt-oss-20b" },
-        { "name": "OVERMIND_EMBEDDING_MODEL", "value": "BAAI/bge-large-en-v1.5" },
         { "name": "RUN_STORE_BACKEND", "value": "memory" },
         { "name": "PORT", "value": "8000" }
       ],
       "secrets": [
         {
-          "name": "OVERMIND_LLM_URL",
-          "valueFrom": "arn:aws:ssm:us-east-2:048270140082:parameter/overmind/llm-url"
+          "name": "GEMINI_API_KEY",
+          "valueFrom": "arn:aws:ssm:us-east-2:048270140082:parameter/overmind/GEMINI_API_KEY"
         },
         {
-          "name": "OVERMIND_LLM_API_KEY",
-          "valueFrom": "arn:aws:ssm:us-east-2:048270140082:parameter/overmind/llm-api-key"
+          "name": "MODEL_ID",
+          "valueFrom": "arn:aws:ssm:us-east-2:048270140082:parameter/overmind/MODEL_ID"
         },
         {
           "name": "OPENAI_API_KEY",
-          "valueFrom": "arn:aws:ssm:us-east-2:048270140082:parameter/overmind/openai-api-key"
+          "valueFrom": "arn:aws:ssm:us-east-2:048270140082:parameter/overmind/OPENAI_API_KEY"
         },
         {
           "name": "OVERMIND_DATABASE_URL",
-          "valueFrom": "arn:aws:ssm:us-east-2:048270140082:parameter/overmind/database-url"
+          "valueFrom": "arn:aws:ssm:us-east-2:048270140082:parameter/overmind/OVERMIND_DATABASE_URL"
+        },
+        {
+          "name": "OVERMIND_EMBEDDING_DIMS",
+          "valueFrom": "arn:aws:ssm:us-east-2:048270140082:parameter/overmind/OVERMIND_EMBEDDING_DIMS"
+        },
+        {
+          "name": "OVERMIND_EMBEDDING_MODEL",
+          "valueFrom": "arn:aws:ssm:us-east-2:048270140082:parameter/overmind/OVERMIND_EMBEDDING_MODEL"
+        },
+        {
+          "name": "OVERMIND_LLM_URL",
+          "valueFrom": "arn:aws:ssm:us-east-2:048270140082:parameter/overmind/OVERMIND_LLM_URL"
+        },
+        {
+          "name": "NGROK_AUTHTOKEN",
+          "valueFrom": "arn:aws:ssm:us-east-2:048270140082:parameter/overmind/NGROK_AUTHTOKEN"
         }
       ],
       "healthCheck": {
