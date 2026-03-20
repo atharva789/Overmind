@@ -3,7 +3,8 @@ provider "aws" {
 }
 
 resource "aws_cloudwatch_log_group" "overmind_log_group" {
-  name = "/ecs/overmind"
+  name              = "/ecs/overmind"
+  retention_in_days = 7
 }
 
 variable "region_name" {
@@ -72,12 +73,12 @@ locals {
   sg_group_id = resource.aws_security_group.default.id
 }
 
-# ── ECS Cluster ────────────────────────────────────────────────────────────────
+#  ECS Cluster 
 resource "aws_ecs_cluster" "main" {
   name = "overmind-ecs-cluster"
 }
 
-# ── ALB Security Group ─────────────────────────────────────────────────────────
+#  ALB Security Group 
 resource "aws_security_group" "alb_sg" {
   name        = "overmind-alb-sg"
   description = "Allow HTTP inbound to ALB"
@@ -108,7 +109,7 @@ resource "aws_lb" "main" {
   subnets            = data.aws_subnets.default.ids
 }
 
-# ── Target Group (points to ECS tasks on port 8000) 
+#  Target Group (points to ECS tasks on port 8000) 
 resource "aws_lb_target_group" "main" {
   name        = "overmind-tg"
   port        = 8000
@@ -142,7 +143,7 @@ data "aws_ecs_task_definition" "main" {
   task_definition = "overmind-task"
 }
 
-# ── ECS Service ────────────────────────────────────────────────────────────────
+# ECS Service 
 resource "aws_ecs_service" "main" {
   name            = "overmind-orchestrator"
   cluster         = aws_ecs_cluster.main.id
@@ -163,7 +164,7 @@ resource "aws_ecs_service" "main" {
   }
 }
 
-# ── Outputs ────────────────────────────────────────────────────────────────────
+# Outputs 
 output "alb_dns_name" {
   description = "ALB DNS name — use as OVERMIND_ORCHESTRATOR_URL"
   value       = "http://${aws_lb.main.dns_name}"

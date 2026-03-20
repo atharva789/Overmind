@@ -112,6 +112,8 @@ export async function initDb() {
         console.log(`[db] ${new Date().toISOString()} Supabase schema initialized successfully.`);
     }
     catch (err) {
+        console.log(`[db] ${new Date().toISOString()} Supabase URL: ${process.env.OVERMIND_DATABASE_URL}`);
+        console.log(`[db] ${new Date().toISOString()} AWS backedn URL: ${process.env.OVERMIND_ORCHESTRATOR_URL}`);
         console.error(`[db] ${new Date().toISOString()} Failed to initialize schema:`, err);
         throw err;
     }

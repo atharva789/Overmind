@@ -61,6 +61,7 @@ export const pool: pg.Pool = new Proxy({} as pg.Pool, {
 export async function initDb() {
     const db = getPool();
     try {
+        await db.query(`CREATE EXTENSION IF NOT EXISTS vector;`);
         await db.query(`
             CREATE TABLE IF NOT EXISTS features (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -105,7 +106,7 @@ export async function initDb() {
                 chunk_name TEXT,
                 start_line INT,
                 end_line INT,
-                embedding VECTOR(1536),
+                embedding VECTOR(${process.env.OVERMIND_EMBEDDING_DIMS}),
                 created_at TIMESTAMPTZ DEFAULT NOW()
             );
         `);
@@ -122,6 +123,8 @@ export async function initDb() {
 
         console.log(`[db] ${new Date().toISOString()} Supabase schema initialized successfully.`);
     } catch (err) {
+        console.log(`[db] ${new Date().toISOString()} Supabase URL: ${process.env.OVERMIND_DATABASE_URL}`);
+        console.log(`[db] ${new Date().toISOString()} AWS backedn URL: ${process.env.OVERMIND_ORCHESTRATOR_URL}`)
         console.error(`[db] ${new Date().toISOString()} Failed to initialize schema:`, err);
         throw err;
     }

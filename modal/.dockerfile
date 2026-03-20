@@ -65,6 +65,11 @@ WORKDIR /app
 # Copy the pre-built virtual env from the builder stage.
 COPY --from=builder /build/venv /app/venv
 
+# Fix shebang lines: pip writes #!/build/venv/bin/python in the builder stage,
+# but the venv lives at /app/venv in the runtime stage. Without this, every
+# console_script (uvicorn, pip, etc.) fails with "no such file or directory".
+RUN find /app/venv/bin -type f -exec grep -l '#!/build/venv/bin/python' {} + | xargs -r sed -i 's|#!/build/venv/bin/python|#!/app/venv/bin/python|g'
+
 # Activate the venv by prepending it to PATH.
 ENV PATH="/app/venv/bin:$PATH"
 
