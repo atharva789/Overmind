@@ -3,27 +3,79 @@
 Multiplayer AI coding agent for your terminal. A host opens a session in their project; teammates join from anywhere and submit prompts; an AI agent executes the changes live in the host's directory.
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                        Architecture                          │
-│                                                              │
-│  Teammate A ──┐                                              │
-│  Teammate B ──┼──► WebSocket Party ──► Story Agent          │
-│  Teammate C ──┘         │              (clusters prompts)    │
-│                         │                                    │
-│                         ▼                                    │
-│                   Scope Extractor                            │
-│                   (Gemini: which files?)                     │
-│                         │                                    │
-│              ┌──────────┴──────────┐                        │
-│              ▼                     ▼                         │
-│        Local Agent          Modal Orchestrator               │
-│        (OVERMIND_LOCAL=1)   (remote sandbox)                 │
-│              │                     │                         │
-│              └──────────┬──────────┘                        │
-│                         ▼                                    │
-│                  Host's Project Files                        │
-└─────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│                        Architecture                                  │
+│                                                                      │
+│  Teammate A ──┐                                                      │
+│  Teammate B ──┼──► WebSocket Party ──► Story Agent                  │
+│  Teammate C ──┘         │              (clusters prompts)            │
+│                         │                                            │
+│                         ▼                                            │
+│                   Scope Extractor                                    │
+│                   (Gemini: which files?)                             │
+│                         │                                            │
+│              ┌──────────┴──────────┐                                │
+│              ▼                     ▼                                 │
+│        Local Agent          ECS Orchestrator                         │
+│        (OVERMIND_LOCAL=1)   (AWS Fargate)                            │
+│              │                     │                                 │
+│              └──────────┬──────────┘                                │
+│                         ▼                                            │
+│                  Host's Project Files                                │
+└─────────────────────────────────────────────────────────────────────┘
 ```
+
+## AWS Infrastructure
+
+The remote execution backend runs on AWS and is fully managed with Terraform (`infra/`).
+
+```
+Internet
+   │
+   ▼
+Application Load Balancer (overmind-alb)
+   │  HTTP :80
+   ▼
+Target Group (overmind-tg, port 8000)
+   │
+   ▼
+ECS Fargate Task (overmind-container)
+   │  FastAPI + uvicorn, port 8000
+   ├── Secrets via SSM Parameter Store
+   │   ├── OPENAI_API_KEY
+   │   ├── GEMINI_API_KEY
+   │   ├── MODEL_ID
+   │   ├── OVERMIND_DATABASE_URL
+   │   ├── OVERMIND_EMBEDDING_MODEL
+   │   └── OVERMIND_EMBEDDING_DIMS
+   └── Logs → CloudWatch (/ecs/overmind)
+
+Supporting services:
+  ECR  — Docker image registry (overmind-orchestrator-repo)
+  VPC  — Default VPC, 3 subnets across availability zones
+```
+
+### Terraform-managed resources
+
+| Resource | Name |
+|----------|------|
+| ECS Cluster | `overmind-ecs-cluster` |
+| ECS Service | `overmind-orchestrator` |
+| Application Load Balancer | `overmind-alb` |
+| ALB Target Group | `overmind-tg` |
+| CloudWatch Log Group | `/ecs/overmind` |
+| Security Group (ECS tasks) | `overmind-ecs-sg` |
+| Security Group (ALB) | `overmind-alb-sg` |
+
+### CI/CD
+
+GitHub Actions (`.github/workflows/workflow.yml`) triggers on push to `thorba-iterate` or any `v*` tag:
+1. Authenticates to ECR
+2. Builds Docker image (`modal/.dockerfile`) with `--platform linux/amd64`
+3. Tags as `sha-<short-sha>` or `v<tag>` and pushes to ECR
+4. ECS picks up the new image on next forced deployment
+
+---
 
 ## Setup
 
@@ -74,10 +126,43 @@ overmind join ABCD --server 192.168.1.50 --port 4444 -u "YourName"
 | Mode | Config | Description |
 |------|--------|-------------|
 | Local | `OVERMIND_LOCAL=1` | Runs Gemini agent directly on host machine |
-| Remote | `OVERMIND_ORCHESTRATOR_URL=...` | Executes in a Modal cloud sandbox |
+| Remote | `OVERMIND_ORCHESTRATOR_URL=...` | Executes in ECS Fargate via ALB |
 
 For local mode, add to `.env`:
 ```
 OVERMIND_LOCAL=1
 GEMINI_API_KEY=your-key
 ```
+
+For remote mode, point at the ALB:
+```
+OVERMIND_ORCHESTRATOR_URL=http://overmind-alb-1995529200.us-east-2.elb.amazonaws.com
+```
+
+### Infrastructure commands
+
+```bash
+# Bring up / update infrastructure
+cd infra && terraform apply
+
+# Kill all running tasks (preserves infrastructure, stops billing for compute)
+bash infra/kill.sh
+
+# Restart
+aws ecs update-service --cluster overmind-ecs-cluster --service overmind-orchestrator --desired-count 1 --region us-east-2
+```
+
+---
+
+## Upcoming changes
+
+### Agent architecture
+- **Multi-agent parallelism** — decompose a prompt into independent sub-tasks and run them as concurrent Fargate tasks, merging results back
+- **Streaming responses** — stream agent token output back to the client over WebSocket instead of waiting for task completion
+- **Persistent agent memory** — store per-session and per-project context in PostgreSQL (pgvector) so agents can reference prior changes
+
+### Infrastructure
+- **HTTPS / custom domain** — ACM certificate + Route 53 alias record on the ALB
+- **Remote Terraform state** — migrate `terraform.tfstate` to S3 + DynamoDB locking for team use
+- **Auto-scaling** — ECS service auto-scaling based on ALB request count
+- **Secrets rotation** — automated SSM parameter rotation via Lambda
