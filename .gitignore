@@ -4,13 +4,18 @@ dist/
 .overmind/
 modal-bridge/__pycache__/
 modal-bridge/.venv/
-modal/__pycache__/
+**/__pycache__/
 modal/.venv/
 orchestrator.log
 .worktrees/
 architecture_drawings/
 greenlight.log
 command_logs/
+
+# claude git worktrees
+.claude/worktrees/friendly-goldstine
+*AUDIT.md
+AUDIT.md
 
 # Terraform
 infra/.terraform/
