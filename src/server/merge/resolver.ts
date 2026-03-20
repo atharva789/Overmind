@@ -1,9 +1,9 @@
 /**
- * Purpose: Call the LLM endpoint to resolve merge conflicts.
- * High-level behavior: Resolves each conflicting file via HTTP POST to the
- *   inference endpoint (OVERMIND_LLM_URL). Retries once on failure. Falls back
- *   to the "ours" side of each conflict block when the endpoint is unavailable.
- * Assumptions: OVERMIND_LLM_URL points to a running OpenAI-compatible endpoint.
+ * Purpose: Call the OpenAI API to resolve merge conflicts.
+ * High-level behavior: Resolves each conflicting file via OpenAI chat
+ *   completions. Retries once on failure. Falls back to the "ours" side
+ *   of each conflict block when the API is unavailable.
+ * Assumptions: OPENAI_API_KEY is set.
  * Invariants: Never throws. Always returns a FileResolution. Logs are
  *   truncated to avoid leaking full file content.
  */
@@ -11,9 +11,20 @@
 import { appendFileSync } from "fs";
 import type { ConflictingFile, FileResolution } from "./types.js";
 
-const LLM_ENDPOINT = process.env["OVERMIND_LLM_URL"];
+const OPENAI_API_KEY = process.env["OPENAI_API_KEY"];
+const OPENAI_MODEL = process.env["MODEL_ID"] ?? "gpt-4o";
 const LOG_PATH = "orchestrator.log";
 const TRUNCATE = 200;
+
+const RESOLVE_SYSTEM_PROMPT = `You are a merge conflict resolver. Given a file with Git conflict markers and project context, produce the correctly merged file.
+
+Respond with ONLY valid JSON (no markdown fences):
+{
+  "resolved_code": "<full file content with conflicts resolved>",
+  "reasoning": "<brief explanation of resolution strategy>",
+  "confidence": "high" | "medium" | "low",
+  "issues": ["<any concerns or caveats>"]
+}`;
 
 function log(msg: string): void {
     const line =
@@ -27,34 +38,47 @@ function log(msg: string): void {
 }
 
 /**
- * Resolve a single conflicting file via the Modal vLLM endpoint.
+ * Resolve a single conflicting file via OpenAI chat completions.
  * Retries once on failure. Falls back to "ours" side with low confidence.
  */
 export async function resolveFile(
     file: ConflictingFile,
     storyMd: string
 ): Promise<FileResolution> {
-    if (!LLM_ENDPOINT) {
-        log("OVERMIND_LLM_URL not set — using fallback");
+    if (!OPENAI_API_KEY) {
+        log("OPENAI_API_KEY not set — using fallback");
         return fallback(
             file,
-            "OVERMIND_LLM_URL environment variable not set"
+            "OPENAI_API_KEY environment variable not set"
         );
     }
 
-    log(`Resolving ${file.path} via LLM inference...`);
+    log(`Resolving ${file.path} via OpenAI API...`);
 
     for (let attempt = 1; attempt <= 2; attempt++) {
         try {
             const response = await fetch(
-                `${LLM_ENDPOINT}/resolve`,
+                "https://api.openai.com/v1/chat/completions",
                 {
                     method: "POST",
-                    headers: { "Content-Type": "application/json" },
+                    headers: {
+                        "Content-Type": "application/json",
+                        "Authorization": `Bearer ${OPENAI_API_KEY}`,
+                    },
                     body: JSON.stringify({
-                        conflicting_file_path: file.path,
-                        conflicting_file_content: file.rawContent,
-                        story_md: storyMd,
+                        model: OPENAI_MODEL,
+                        temperature: 0,
+                        messages: [
+                            { role: "system", content: RESOLVE_SYSTEM_PROMPT },
+                            {
+                                role: "user",
+                                content: [
+                                    `File: ${file.path}`,
+                                    `Project context:\n${storyMd}`,
+                                    `Conflicting content:\n${file.rawContent}`,
+                                ].join("\n\n"),
+                            },
+                        ],
                     }),
                     signal: AbortSignal.timeout(120_000),
                 }
@@ -67,7 +91,12 @@ export async function resolveFile(
                 );
             }
 
-            const data = await response.json() as {
+            const completion = await response.json() as {
+                choices: Array<{ message: { content: string } }>;
+            };
+
+            const raw = completion.choices[0]?.message?.content ?? "";
+            const data = JSON.parse(raw) as {
                 resolved_code: string;
                 reasoning: string;
                 confidence: "high" | "medium" | "low";
@@ -120,7 +149,7 @@ export async function resolveFile(
 
 /**
  * Resolve all conflicting files sequentially to avoid overwhelming
- * the LLM inference endpoint with concurrent requests.
+ * the OpenAI API with concurrent requests.
  */
 export async function resolveAllConflicts(
     files: ConflictingFile[],
@@ -137,7 +166,7 @@ export async function resolveAllConflicts(
 
 /**
  * Fallback: take the "ours" side of every conflict block.
- * Used when Modal inference is unavailable or fails after retries.
+ * Used when OpenAI API is unavailable or fails after retries.
  * Always returns low confidence so the host knows to review carefully.
  */
 function fallback(
@@ -174,7 +203,7 @@ function fallback(
         path: file.path,
         resolvedContent: resolved.trimEnd(),
         reasoning:
-            `LLM inference unavailable (${reason.slice(0, 100)}). ` +
+            `OpenAI API unavailable (${reason.slice(0, 100)}). ` +
             `Defaulted to 'ours' side of every conflict. ` +
             `Manual review required.`,
         confidence: "low",

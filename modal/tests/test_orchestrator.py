@@ -147,7 +147,7 @@ import orchestrator  # noqa: E402  (must come after stub injection)
 
 def _clear_llm_env() -> None:
     """Remove all LLM-related env vars so tests start from a clean state."""
-    for key in ("OVERMIND_LLM_URL", "OPENAI_API_KEY", "OVERMIND_LLM_API_KEY"):
+    for key in ("OPENAI_API_KEY",):
         os.environ.pop(key, None)
 
 
@@ -156,20 +156,16 @@ def _clear_llm_env() -> None:
 # ===========================================================================
 
 class TestGetClient:
-    """Unit tests for get_client() covering all three code paths."""
+    """Unit tests for get_client() using OPENAI_API_KEY."""
 
     def setup_method(self):
         _clear_llm_env()
-        # Reset module-level LLM_URL to empty so tests control it via the
-        # OVERMIND_LLM_URL env var (we patch the module attribute directly).
-        orchestrator.LLM_URL = ""
 
     def teardown_method(self):
         _clear_llm_env()
-        orchestrator.LLM_URL = ""
 
     # ------------------------------------------------------------------
-    # Path 1: OPENAI_API_KEY is set → standard OpenAI client
+    # OPENAI_API_KEY is set → standard OpenAI client
     # ------------------------------------------------------------------
 
     def test_get_client_with_openai_api_key_returns_async_openai(self):
@@ -208,77 +204,21 @@ class TestGetClient:
         assert client.api_key == "sk-unique-sentinel"
 
     # ------------------------------------------------------------------
-    # Path 2: OVERMIND_LLM_URL is set → custom endpoint client
+    # No OPENAI_API_KEY → RuntimeError
     # ------------------------------------------------------------------
 
-    def test_get_client_with_llm_url_returns_async_openai(self):
-        """get_client() with OVERMIND_LLM_URL set returns an AsyncOpenAI instance."""
-        orchestrator.LLM_URL = "http://localhost:8000"
-
-        client, _ = orchestrator.get_client()
-
-        from openai import AsyncOpenAI
-        assert isinstance(client, AsyncOpenAI)
-
-    def test_get_client_with_llm_url_sets_base_url(self):
-        """Client base_url is set to <LLM_URL>/v1 when using custom endpoint."""
-        orchestrator.LLM_URL = "http://my-llm-host:9000"
-
-        client, _ = orchestrator.get_client()
-
-        assert str(client.base_url).rstrip("/") == "http://my-llm-host:9000/v1"
-
-    def test_get_client_with_llm_url_uses_placeholder_key_when_no_llm_api_key(self):
-        """Custom endpoint path uses 'sk-not-needed' when OVERMIND_LLM_API_KEY absent."""
-        orchestrator.LLM_URL = "http://localhost:8000"
-        os.environ.pop("OVERMIND_LLM_API_KEY", None)
-
-        client, _ = orchestrator.get_client()
-
-        assert client.api_key == "sk-not-needed"
-
-    def test_get_client_with_llm_url_uses_provided_llm_api_key(self):
-        """Custom endpoint path uses OVERMIND_LLM_API_KEY when provided."""
-        orchestrator.LLM_URL = "http://localhost:8000"
-        os.environ["OVERMIND_LLM_API_KEY"] = "sk-custom-key"
-
-        client, _ = orchestrator.get_client()
-
-        assert client.api_key == "sk-custom-key"
-
-    # ------------------------------------------------------------------
-    # Path 3: Neither env var set → RuntimeError
-    # ------------------------------------------------------------------
-
-    def test_get_client_raises_when_neither_env_var_set(self):
-        """get_client() raises RuntimeError when no LLM is configured."""
-        # LLM_URL already cleared in setup_method; OPENAI_API_KEY absent too.
-
+    def test_get_client_raises_when_no_api_key(self):
+        """get_client() raises RuntimeError when OPENAI_API_KEY is not set."""
         with pytest.raises(RuntimeError, match="No LLM configured"):
             orchestrator.get_client()
 
-    def test_get_client_error_message_mentions_both_env_vars(self):
-        """RuntimeError message names both OVERMIND_LLM_URL and OPENAI_API_KEY."""
+    def test_get_client_error_message_mentions_openai_api_key(self):
+        """RuntimeError message names OPENAI_API_KEY."""
         with pytest.raises(RuntimeError) as exc_info:
             orchestrator.get_client()
 
         msg = str(exc_info.value)
-        assert "OVERMIND_LLM_URL" in msg
         assert "OPENAI_API_KEY" in msg
-
-    # ------------------------------------------------------------------
-    # Priority: LLM_URL takes precedence over OPENAI_API_KEY
-    # ------------------------------------------------------------------
-
-    def test_get_client_llm_url_takes_priority_over_openai_key(self):
-        """When both are set, OVERMIND_LLM_URL path is chosen (custom base_url)."""
-        orchestrator.LLM_URL = "http://custom:8000"
-        os.environ["OPENAI_API_KEY"] = "sk-should-be-ignored"
-
-        client, _ = orchestrator.get_client()
-
-        # Custom path sets base_url; OpenAI-direct path does not.
-        assert "custom:8000" in str(client.base_url)
 
 
 # ===========================================================================

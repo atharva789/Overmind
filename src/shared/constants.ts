@@ -69,8 +69,6 @@ function envNum(key: string, fallback: number): number {
     return v !== undefined ? Number(v) : fallback;
 }
 
-// ─── Merge conflict solver (uses the same LLM endpoint as the orchestrator) ───
-export function get_CONFLICT_RESOLVER_URL(): string { return env("OVERMIND_LLM_URL"); }
 export function get_GITHUB_TOKEN(): string { return env("GITHUB_TOKEN"); }
 export function get_GITHUB_REPO(): string { return env("GITHUB_REPO"); }
 export function get_GITHUB_BASE_BRANCH(): string { return env("GITHUB_BASE_BRANCH", "main"); }
@@ -102,7 +100,6 @@ export function get_ALWAYS_SYNC_PATTERNS(): string[] {
 
 // ─── Backward-compatible aliases (lazy via getter) ───
 // The value is read fresh from process.env on every access.
-export { get_CONFLICT_RESOLVER_URL as CONFLICT_RESOLVER_URL };
 export { get_GITHUB_TOKEN as GITHUB_TOKEN };
 export { get_GITHUB_REPO as GITHUB_REPO };
 export { get_GITHUB_BASE_BRANCH as GITHUB_BASE_BRANCH };

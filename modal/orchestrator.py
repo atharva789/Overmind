@@ -3,7 +3,7 @@ Purpose: FastAPI app orchestrating Overmind execution runs.
 High-level behavior: Exposes /runs, /health, and /initialize_codebase endpoints.
   Workers run in-process via asyncio.create_task; for production, hook in
   ECS Fargate task dispatch or Lambda invocation in create_run().
-Assumptions: OVERMIND_LLM_URL points to an OpenAI-compatible chat completions API.
+Assumptions: OPENAI_API_KEY is set for LLM access.
 Invariants: Handlers never generate file edits; workers produce all file updates.
   db_pool is None when OVERMIND_DATABASE_URL is unset; DB endpoints return 503.
 """
@@ -72,7 +72,6 @@ from utils import log, now_iso
 
 APP_NAME = "overmind-orchestrator"
 MODEL_ID = os.environ.get("MODEL_ID", "openai/gpt-oss-20b")
-LLM_URL = os.environ.get("OVERMIND_LLM_URL", "").rstrip("/")
 LLM_TIMEOUT_S = int(os.environ.get("OVERMIND_LLM_TIMEOUT_S", "3600"))
 OVERMIND_DATABASE_URL = os.environ.get("OVERMIND_DATABASE_URL", "")
 MAX_AGENT_ROUNDS = 10
@@ -169,25 +168,18 @@ async def generate_embeddings_batch(texts: list[str]) -> list[list[float]]:
 def get_client() -> tuple[AsyncOpenAI, dict[str, Any]]:
     """Build an AsyncOpenAI client and shared context dict.
 
-    Priority: OVERMIND_LLM_URL (custom endpoint) > OPENAI_API_KEY (OpenAI API).
-    Raises RuntimeError if neither is configured.
+    Requires OPENAI_API_KEY. Raises RuntimeError if not set.
     """
-    if LLM_URL:
-        client = AsyncOpenAI(
-            base_url=f"{LLM_URL}/v1",
-            api_key=os.environ.get("OVERMIND_LLM_API_KEY", "sk-not-needed"),
-            timeout=float(LLM_TIMEOUT_S),
-        )
-    elif os.environ.get("OPENAI_API_KEY"):
-        client = AsyncOpenAI(
-            api_key=os.environ["OPENAI_API_KEY"],
-            timeout=float(LLM_TIMEOUT_S),
-        )
-    else:
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
         raise RuntimeError(
-            "No LLM configured. Set OVERMIND_LLM_URL (custom endpoint) "
-            "or OPENAI_API_KEY (OpenAI API)."
+            "No LLM configured. Set OPENAI_API_KEY."
         )
+
+    client = AsyncOpenAI(
+        api_key=api_key,
+        timeout=float(LLM_TIMEOUT_S),
+    )
 
     ctx: dict[str, Any] = {
         "client": client,
@@ -441,13 +433,14 @@ async def health() -> dict[str, object]:
     Does not raise on failure.
     Invariants: Always returns a status dict.
     """
-    if not LLM_URL:
-        return {"status": "ok", "llm_connected": False, "error": "OVERMIND_LLM_URL not set"}
-    url = f"{LLM_URL}/v1/models"
-    headers: dict[str, str] = {"Content-Type": "application/json"}
-    api_key = os.environ.get("OVERMIND_LLM_API_KEY")
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        return {"status": "ok", "llm_connected": False, "error": "OPENAI_API_KEY not set"}
+    url = "https://api.openai.com/v1/models"
+    headers: dict[str, str] = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}",
+    }
     try:
         async with httpx.AsyncClient(timeout=5) as client:
             (await client.get(url, headers=headers)).raise_for_status()

@@ -17,6 +17,37 @@ variable "app_name" {
   default = "overmind"
 }
 
+variable "account_id" {
+  type    = string
+  default = "048270140082"
+}
+
+variable "ecr_image_tag" {
+  type    = string
+  default = "v1.0"
+}
+
+# SSM Parameter Store secrets — must match names in /overmind/* in SSM
+variable "ssm_parameter_names" {
+  type = list(string)
+  default = [
+    "GEMINI_API_KEY",
+    "MODEL_ID",
+    "NGROK_AUTHTOKEN",
+    "OPENAI_API_KEY",
+    "OVERMIND_DATABASE_URL",
+    "OVERMIND_EMBEDDING_DIMS",
+    "OVERMIND_EMBEDDING_MODEL",
+    "OVERMIND_ORCHESTRATOR_URL",
+  ]
+}
+
+# ── IAM: ECS Task Execution Role (already exists, created via CLI) ──
+
+data "aws_iam_role" "ecs_execution" {
+  name = "ecsTaskExecutionRole"
+}
+
 # data: it's a resource which already exists
 data "aws_vpc" "default" {
   default = true
@@ -71,6 +102,8 @@ output "aws_security_group_id" {
 locals {
   subnet_ids  = slice(data.aws_subnets.default.ids, 0, 2)
   sg_group_id = resource.aws_security_group.default.id
+  ecr_image   = "${var.account_id}.dkr.ecr.${var.region_name}.amazonaws.com/overmind-orchestrator-repo:${var.ecr_image_tag}"
+  ssm_prefix  = "overmind"
 }
 
 #  ECS Cluster 
@@ -138,16 +171,56 @@ resource "aws_lb_listener" "http" {
   }
 }
 
-#  Task Definition (look up latest active revision) 
-data "aws_ecs_task_definition" "main" {
-  task_definition = "overmind-task"
+# ── ECS Task Definition ──
+# Mirrors the task-def.json from command_logs/aws_commands, now with SSM secrets.
+
+resource "aws_ecs_task_definition" "main" {
+  family                   = "overmind-task"
+  network_mode             = "awsvpc"
+  requires_compatibilities = ["FARGATE"]
+  cpu                      = "1024"
+  memory                   = "2048"
+  execution_role_arn       = data.aws_iam_role.ecs_execution.arn
+
+  container_definitions = jsonencode([
+    {
+      name      = "overmind-container"
+      image     = local.ecr_image
+      essential = true
+
+      portMappings = [
+        {
+          containerPort = 8000
+          protocol      = "tcp"
+        }
+      ]
+
+      # Secrets injected from SSM Parameter Store (overmind/SECRET_NAME)
+      secrets = [
+        for name in var.ssm_parameter_names : {
+          name      = name
+          valueFrom = "arn:aws:ssm:${var.region_name}:${var.account_id}:parameter/${local.ssm_prefix}/${name}"
+        }
+      ]
+
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          "awslogs-group"         = aws_cloudwatch_log_group.overmind_log_group.name
+          "awslogs-region"        = var.region_name
+          "awslogs-stream-prefix" = "ecs"
+        }
+      }
+    }
+  ])
 }
 
-# ECS Service 
+# ── ECS Service ──
+
 resource "aws_ecs_service" "main" {
   name            = "overmind-orchestrator"
   cluster         = aws_ecs_cluster.main.id
-  task_definition = data.aws_ecs_task_definition.main.arn
+  task_definition = aws_ecs_task_definition.main.arn
   desired_count   = 1
   launch_type     = "FARGATE"
 
