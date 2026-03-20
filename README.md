@@ -166,3 +166,11 @@ aws ecs update-service --cluster overmind-ecs-cluster --service overmind-orchest
 - **Remote Terraform state** — migrate `terraform.tfstate` to S3 + DynamoDB locking for team use
 - **Auto-scaling** — ECS service auto-scaling based on ALB request count
 - **Secrets rotation** — automated SSM parameter rotation via Lambda
+
+---
+
+## Feedback
+
+We'd love to hear from you! Please share your experience, report bugs, or suggest improvements using our feedback form:
+
+**[Overmind Feedback Form](https://docs.google.com/forms/d/e/1FAIpQLSfbYdIqiNQT3KLJZRsKJojx6VJsrhSQloBVfRzn61H6nnCuxw/viewform)**
