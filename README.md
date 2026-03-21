@@ -3,27 +3,54 @@
 Multiplayer AI coding agent for your terminal. A host opens a session in their project; teammates join from anywhere and submit prompts; an AI agent executes the changes live in the host's directory.
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                        Architecture                                  │
-│                                                                      │
-│  Teammate A ──┐                                                      │
-│  Teammate B ──┼──► WebSocket Party ──► Story Agent                  │
-│  Teammate C ──┘         │              (clusters prompts)            │
-│                         │                                            │
-│                         ▼                                            │
-│                   Scope Extractor                                    │
-│                   (Gemini: which files?)                             │
-│                         │                                            │
-│              ┌──────────┴──────────┐                                │
-│              ▼                     ▼                                 │
-│        Local Agent          ECS Orchestrator                         │
-│        (OVERMIND_LOCAL=1)   (AWS Fargate)                            │
-│              │                     │                                 │
-│              └──────────┬──────────┘                                │
-│                         ▼                                            │
-│                  Host's Project Files                                │
-└─────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────┐
+│                           Architecture                                    │
+│                                                                           │
+│  Teammate A ──┐                                                           │
+│  Teammate B ──┼──► WebSocket Party ──► Story Agent                       │
+│  Teammate C ──┘         │              (clusters prompts)                 │
+│                         │                                                 │
+│                         ▼                                                 │
+│                   Scope Extractor                                         │
+│                   (Gemini: which files?)                                  │
+│                         │                                                 │
+│              ┌──────────┴──────────┐                                     │
+│              ▼                     ▼                                      │
+│        Local Agent          ECS Orchestrator (Fargate)                    │
+│        (OVERMIND_LOCAL=1)         │                                       │
+│              │                    ▼                                       │
+│              │             Planner Agent (gpt-4o)                         │
+│              │                    │                                       │
+│              │         ┌──────┬──┴──┬──────┐                             │
+│              │         ▼      ▼     ▼      ▼                             │
+│              │       Sub-   Sub-  Sub-   Sub-                            │
+│              │       agent  agent agent  agent                           │
+│              │         │      │     │      │                             │
+│              │         └──────┴──┬──┴──────┘                             │
+│              │                   │  (tool-use streamed via WebSocket)     │
+│              └──────────┬────────┘                                       │
+│                         ▼                                                 │
+│                  Host's Project Files                                     │
+└──────────────────────────────────────────────────────────────────────────┘
 ```
+
+### Real-Time Streaming
+
+The orchestrator streams execution events to the frontend in real-time over WebSocket:
+
+```
+Orchestrator (Python)              Server (TypeScript)              Client (TUI)
+agent_loop emits events
+  → Session asyncio.Queue  ──WS──>  handleExecutionEvent    ──WS──>  ExecutionView
+                                     (submitter only)                 multi-agent panel
+```
+
+Events streamed:
+- **plan-ready** — planner decomposes prompt into named tasks
+- **agent-spawned** — each subagent starts with a task name
+- **tool-use / tool-result** — tool name, success/failure, truncated output
+- **agent-finished** — per-agent completion with files changed
+- **run-complete / run-error** — terminal events close the WebSocket
 
 ## AWS Infrastructure
 
@@ -157,15 +184,14 @@ aws ecs update-service --cluster overmind-ecs-cluster --service overmind-orchest
 ## Upcoming changes
 
 ### Agent architecture
-- **Multi-agent parallelism** — decompose a prompt into independent sub-tasks and run them as concurrent Fargate tasks, merging results back
-- **Streaming responses** — stream agent token output back to the client over WebSocket instead of waiting for task completion
 - **Persistent agent memory** — store per-session and per-project context in PostgreSQL (pgvector) so agents can reference prior changes
+- **Agent evaluation harness** — recall@k and precision@k metrics for scope extraction and semantic search
 
 ### Infrastructure
 - **HTTPS / custom domain** — ACM certificate + Route 53 alias record on the ALB
 - **Remote Terraform state** — migrate `terraform.tfstate` to S3 + DynamoDB locking for team use
 - **Auto-scaling** — ECS service auto-scaling based on ALB request count
-- **Secrets rotation** — automated SSM parameter rotation via Lambda
+- **API authentication** — API key middleware on orchestrator endpoints
 
 ---
 
