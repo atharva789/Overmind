@@ -6,9 +6,9 @@
  */
 
 export const STAGE_ACQUIRE = "Acquiring file locks...";
-export const STAGE_SYNC = "Syncing project files to sandbox...";
-export const STAGE_SPAWN = "Spawning sandbox...";
-export const STAGE_WORKING = "Agent is working...";
+export const STAGE_SYNC = "Syncing project files...";
+export const STAGE_SPAWN = "Planning task decomposition...";
+export const STAGE_WORKING = "Agents executing tasks...";
 export const STAGE_EXTRACT = "Extracting changes...";
 export const STAGE_APPLY = "Applying changes to codebase...";
 

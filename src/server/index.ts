@@ -979,6 +979,49 @@ function handleExecutionEvent(
             break;
         }
 
+        case "plan-ready": {
+            party.sendTo(entry.connectionId, {
+                type: "execution-plan-ready",
+                payload: {
+                    promptId: entry.promptId,
+                    tasks: event.tasks ?? [],
+                },
+            });
+            break;
+        }
+
+        case "agent-spawned":
+        case "agent-finished": {
+            party.sendTo(entry.connectionId, {
+                type: "execution-agent-update",
+                payload: {
+                    promptId: entry.promptId,
+                    taskIndex: event.taskIndex ?? 0,
+                    taskName: event.taskName ?? "",
+                    status: event.status ?? "spawned",
+                    summary: event.summary,
+                    filesChanged: event.filesChanged,
+                },
+            });
+            break;
+        }
+
+        case "tool-activity": {
+            party.sendTo(entry.connectionId, {
+                type: "execution-tool-activity",
+                payload: {
+                    promptId: entry.promptId,
+                    taskIndex: event.taskIndex ?? 0,
+                    taskName: event.taskName ?? "",
+                    toolName: event.toolName ?? "",
+                    phase: event.phase ?? "start",
+                    success: event.success,
+                    outputPreview: event.outputPreview,
+                },
+            });
+            break;
+        }
+
         case "error": {
             party.sendTo(entry.connectionId, {
                 type: "error",

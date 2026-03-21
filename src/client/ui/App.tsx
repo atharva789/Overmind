@@ -91,7 +91,10 @@ type Action =
     | { type: "SHELL_OUTPUT"; output: string; command: string }
     | { type: "MERGE_UPDATE"; stage: string }
     | { type: "MERGE_COMPLETE"; filesResolved: number; prUrl?: string; hasLowConfidence: boolean; branchName: string; summary: string }
-    | { type: "MERGE_ERROR"; message: string };
+    | { type: "MERGE_ERROR"; message: string }
+    | { type: "EXECUTION_PLAN_READY"; promptId: string; tasks: Array<{ taskIndex: number; taskName: string; taskDescription: string }> }
+    | { type: "EXECUTION_AGENT_UPDATE"; promptId: string; taskIndex: number; taskName: string; status: "spawned" | "working" | "finished"; summary?: string; filesChanged?: string[] }
+    | { type: "EXECUTION_TOOL_ACTIVITY"; promptId: string; taskIndex: number; taskName: string; toolName: string; phase: "start" | "result"; success?: boolean; outputPreview?: string };
 
 function addOutput(
     outputs: OutputEntry[],
@@ -379,6 +382,49 @@ function reducer(state: AppState, action: Action): AppState {
                 outputs: addOutput(state.outputs, `merge-${Date.now()}`, "error", `Merge failed: ${action.message}`),
             };
 
+        case "EXECUTION_PLAN_READY": {
+            if (state.execution?.promptId !== action.promptId) return state;
+            return {
+                ...state,
+                execution: {
+                    ...state.execution,
+                    tasks: action.tasks.map(t => ({ ...t, status: "pending" as const })),
+                },
+            };
+        }
+
+        case "EXECUTION_AGENT_UPDATE": {
+            if (state.execution?.promptId !== action.promptId) return state;
+            const tasks = (state.execution.tasks ?? []).map(t =>
+                t.taskIndex === action.taskIndex
+                    ? { ...t, status: action.status, summary: action.summary, filesChanged: action.filesChanged }
+                    : t
+            );
+            return {
+                ...state,
+                execution: { ...state.execution, tasks },
+            };
+        }
+
+        case "EXECUTION_TOOL_ACTIVITY": {
+            if (state.execution?.promptId !== action.promptId) return state;
+            return {
+                ...state,
+                execution: {
+                    ...state.execution,
+                    activeTools: {
+                        ...state.execution.activeTools,
+                        [action.taskIndex]: {
+                            toolName: action.toolName,
+                            phase: action.phase,
+                            success: action.success,
+                            outputPreview: action.outputPreview,
+                        },
+                    },
+                },
+            };
+        }
+
         default:
             return state;
     }
@@ -576,6 +622,36 @@ export default function App({ connection, session, inviteCode }: AppProps): Reac
                     break;
                 case "merge-error":
                     dispatch({ type: "MERGE_ERROR", message: msg.payload.message });
+                    break;
+                case "execution-plan-ready":
+                    dispatch({
+                        type: "EXECUTION_PLAN_READY",
+                        promptId: msg.payload.promptId,
+                        tasks: msg.payload.tasks,
+                    });
+                    break;
+                case "execution-agent-update":
+                    dispatch({
+                        type: "EXECUTION_AGENT_UPDATE",
+                        promptId: msg.payload.promptId,
+                        taskIndex: msg.payload.taskIndex,
+                        taskName: msg.payload.taskName,
+                        status: msg.payload.status,
+                        summary: msg.payload.summary,
+                        filesChanged: msg.payload.filesChanged,
+                    });
+                    break;
+                case "execution-tool-activity":
+                    dispatch({
+                        type: "EXECUTION_TOOL_ACTIVITY",
+                        promptId: msg.payload.promptId,
+                        taskIndex: msg.payload.taskIndex,
+                        taskName: msg.payload.taskName,
+                        toolName: msg.payload.toolName,
+                        phase: msg.payload.phase,
+                        success: msg.payload.success,
+                        outputPreview: msg.payload.outputPreview,
+                    });
                     break;
             }
         };

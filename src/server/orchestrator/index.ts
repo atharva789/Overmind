@@ -51,7 +51,11 @@ export interface ExecutionEvent {
     | "agent-output"
     | "files-changed"
     | "complete"
-    | "error";
+    | "error"
+    | "plan-ready"
+    | "agent-spawned"
+    | "agent-finished"
+    | "tool-activity";
     stage?: string;
     detail?: string;
     content?: string;
@@ -66,6 +70,17 @@ export interface ExecutionEvent {
     message?: string;
     recoverable?: boolean;
     reason?: string;
+    // Streaming event fields
+    tasks?: Array<{ taskIndex: number; taskName: string; taskDescription: string }>;
+    taskIndex?: number;
+    taskName?: string;
+    status?: "spawned" | "working" | "finished";
+    summary?: string;
+    filesChanged?: string[];
+    toolName?: string;
+    phase?: "start" | "result";
+    success?: boolean;
+    outputPreview?: string;
 }
 
 export interface AgentExecution {

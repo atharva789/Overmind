@@ -19,7 +19,7 @@ from contextlib import asynccontextmanager
 from typing import Any, Optional
 
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
 from openai import AsyncOpenAI
@@ -66,6 +66,11 @@ from run_store import (
     STATUS_QUEUED,
     STAGE_SPAWNING,
     STAGE_WORKING,
+)
+from session import create_session, get_session, close_session
+from stream_events import (
+    PlanReady, AgentSpawned, AgentFinished, AgentStatus,
+    ToolUse, ToolResult, RunComplete, RunError,
 )
 from utils import log, now_iso
 
@@ -200,7 +205,10 @@ async def run_planner(client, user_query: str) -> PlannerOutput:
     )
     return response.choices[0].message.parsed
 
-async def subagent_loop(client, ctx, task: PlannerTask, req_files: dict[str, str], run_id: str) -> AgentResult:
+async def subagent_loop(
+    client, ctx, task: PlannerTask, req_files: dict[str, str],
+    run_id: str, session: "Session | None" = None, task_index: int = 0,
+) -> AgentResult:
     """
     Run the generic tool-calling loop for a specific subagent.
     Uses the OpenAI SDK with native tool calling.
@@ -254,16 +262,41 @@ async def subagent_loop(client, ctx, task: PlannerTask, req_files: dict[str, str
             if tool_name == "subagent_finished":
                 summary = args.get("summary", "Changes applied")
                 log(f"subagent_loop: finished round={round_num}")
-                return AgentResult(
+                agent_result = AgentResult(
                     summary=summary,
                     files=[
                         FileChange(path=p, content=c)
                         for p, c in sorted(workspace.items())
                     ],
                 )
+                if session:
+                    session.emit(AgentFinished(
+                        task_index=task_index,
+                        task_name=task.agent_name,
+                        status=AgentStatus.SUCCESSFUL,
+                        files_changed=list(workspace.keys()),
+                        summary=summary,
+                    ))
+                return agent_result
+
+            if session:
+                session.emit(ToolUse(
+                    task_index=task_index,
+                    task_name=task.agent_name,
+                    tool_name=tool_name,
+                ))
 
             result = await execute_tool(tool_name, args, req_files, workspace, ctx)
             log(f"subagent_loop: tool={tool_name} result_len={len(result)}")
+
+            if session:
+                session.emit(ToolResult.from_raw(
+                    task_index=task_index,
+                    task_name=task.agent_name,
+                    tool_name=tool_name,
+                    success=True,
+                    raw_output=result,
+                ))
 
             messages.append({
                 "role": "tool",
@@ -309,6 +342,7 @@ async def agent_loop(
     subagent_tasks: PlannerOutput,
     req_files: dict[str, str],
     run_id: str,
+    session: "Session | None" = None,
 ) -> AgentResult:
     """
     Run parallel subagents for each planner task, then ask the planner to
@@ -325,10 +359,17 @@ async def agent_loop(
 
         log(f"agent_loop: run_id={run_id} round={round_num}/{MAX_AGENT_ROUNDS}")
 
-        coroutines = [
-            subagent_loop(client, ctx, task, req_files, run_id)
-            for task in pending_tasks.tasks
-        ]
+        coroutines = []
+        for i, task in enumerate(pending_tasks.tasks):
+            if session:
+                session.emit(AgentSpawned(
+                    task_index=i,
+                    task_name=task.agent_name,
+                    task_description=task.task_description,
+                ))
+            coroutines.append(
+                subagent_loop(client, ctx, task, req_files, run_id, session, i)
+            )
         subagent_results: list[AgentResult] = await asyncio.gather(*coroutines)
 
         for res in subagent_results:
@@ -397,33 +438,48 @@ async def agent_loop(
     )
 
 
-async def run_worker(run_id: str, req: RunCreateRequest) -> None:
+async def run_worker(run_id: str, req: RunCreateRequest, session: "Session") -> None:
     """
     Execute a run: run the agent loop and persist the result.
-    Does not write to the host filesystem.
-    Edge cases: Cancels early if run is marked canceled before execution starts.
-    Invariants: Updates run status on all exit paths.
+    Emits stream events to the session queue throughout execution.
     """
+    from session import Session, close_session
+
     log(f"run_worker: start run_id={run_id} files={len(req.files)}")
     await mark_run_running(run_id)
 
     if await should_cancel(run_id):
         log(f"run_worker: run_id={run_id} canceled before execution")
         await mark_run_canceled(run_id, "Run canceled before execution.")
+        session.emit(RunError(error="Run canceled before execution."))
+        close_session(run_id)
         return
 
     try:
-        # start planner here
         client, ctx = get_client()
         subagent_tasks = await run_planner(client, build_agent_user_message(req))
-        result = await agent_loop(client, ctx, subagent_tasks, req.files, run_id)
+
+        session.emit(PlanReady(tasks=[
+            {"task_index": i, "task_name": t.agent_name, "task_description": t.task_description}
+            for i, t in enumerate(subagent_tasks.tasks)
+        ]))
+
+        result = await agent_loop(client, ctx, subagent_tasks, req.files, run_id, session)
     except Exception as exc:
         log(f"run_worker: run_id={run_id} error:\n{traceback.format_exc()}")
         await mark_run_failed(run_id, STAGE_WORKING, "Agent execution failed.", str(exc))
+        session.emit(RunError(error=str(exc)))
+        close_session(run_id)
         return
 
     log(f"run_worker: run_id={run_id} completed files={len(result.files)}")
     await mark_run_completed(run_id, result)
+
+    session.emit(RunComplete(
+        summary=result.summary,
+        files=[{"path": f.path} for f in result.files],
+    ))
+    close_session(run_id)
 
 
 @web_app.get("/health")
@@ -474,7 +530,8 @@ async def create_run(req: RunCreateRequest) -> RunCreateResponse:
         ),
     )
 
-    task = asyncio.create_task(run_worker(req.runId, req))
+    session = create_session(req.runId)
+    task = asyncio.create_task(run_worker(req.runId, req, session))
     _active_tasks.add(task)
     task.add_done_callback(_active_tasks.discard)
 
@@ -566,3 +623,21 @@ async def initialize_codebase(req: InitializeCodebaseRequest) -> InitializeCodeb
         branchId=branch_id,
         chunksStored=chunks_stored,
     )
+
+
+@web_app.websocket("/runs/{run_id}/ws")
+async def run_stream(websocket: WebSocket, run_id: str):
+    """Stream run events to the frontend. Closes on RunComplete or RunError."""
+    session = get_session(run_id)
+    if session is None:
+        await websocket.close(code=4004, reason="run not found or already finished")
+        return
+
+    await websocket.accept()
+    try:
+        async for event in session.subscribe():
+            await websocket.send_text(event.model_dump_json())
+    except WebSocketDisconnect:
+        log(f"run_stream: client disconnected run_id={run_id}")
+    finally:
+        close_session(run_id)

@@ -280,6 +280,43 @@ const MergeErrorMessage = z.object({
     }),
 });
 
+const ExecutionPlanReadyMessage = z.object({
+    type: z.literal("execution-plan-ready"),
+    payload: z.object({
+        promptId: z.string(),
+        tasks: z.array(z.object({
+            taskIndex: z.number(),
+            taskName: z.string(),
+            taskDescription: z.string(),
+        })),
+    }),
+});
+
+const ExecutionAgentUpdateMessage = z.object({
+    type: z.literal("execution-agent-update"),
+    payload: z.object({
+        promptId: z.string(),
+        taskIndex: z.number(),
+        taskName: z.string(),
+        status: z.enum(["spawned", "working", "finished"]),
+        summary: z.string().optional(),
+        filesChanged: z.array(z.string()).optional(),
+    }),
+});
+
+const ExecutionToolActivityMessage = z.object({
+    type: z.literal("execution-tool-activity"),
+    payload: z.object({
+        promptId: z.string(),
+        taskIndex: z.number(),
+        taskName: z.string(),
+        toolName: z.string(),
+        phase: z.enum(["start", "result"]),
+        success: z.boolean().optional(),
+        outputPreview: z.string().optional(),
+    }),
+});
+
 export const ServerMessageSchema = z.discriminatedUnion("type", [
     JoinAckMessage,
     MemberJoinedMessage,
@@ -304,6 +341,9 @@ export const ServerMessageSchema = z.discriminatedUnion("type", [
     MergeUpdateMessage,
     MergeCompleteMessage,
     MergeErrorMessage,
+    ExecutionPlanReadyMessage,
+    ExecutionAgentUpdateMessage,
+    ExecutionToolActivityMessage,
 ]);
 
 export type ServerMessage = z.infer<typeof ServerMessageSchema>;
