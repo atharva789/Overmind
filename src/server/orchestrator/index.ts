@@ -56,7 +56,8 @@ export interface ExecutionEvent {
     | "plan-ready"
     | "agent-spawned"
     | "agent-finished"
-    | "tool-activity";
+    | "tool-activity"
+    | "run-complete";
     stage?: string;
     detail?: string;
     content?: string;
@@ -148,39 +149,38 @@ export class Orchestrator {
             await client.createRun(runPayload.payload);
             yield { type: "stage", stage: STAGE_SPAWN };
 
-            // Start WS stream consumer in background for real-time events
-            const streamEvents: ExecutionEvent[] = [];
-            const wsCleanup = this.connectEventStream(
-                promptId,
-                runId,
-                client,
-                streamEvents
-            );
-
             let runResult: RunCompletion | null = null;
+            let usedStream = false;
+
+            // Try WS streaming first — yields events in real-time
+            try {
+                for await (const event of this.streamRun(promptId, runId)) {
+                    usedStream = true;
+                    if (event.type === "run-complete" || event.type === "error") {
+                        // WS got terminal event — poll once for actual file contents
+                        break;
+                    }
+                    yield event;
+                }
+            } catch {
+                this.log(promptId, mode, "ws stream failed, falling back to poll");
+            }
+
+            // Poll for final result (always needed — WS doesn't send file content)
             for await (const event of this.pollRun(
                 promptId,
                 runId,
                 client,
-                STAGE_SPAWN
+                usedStream ? null : STAGE_SPAWN
             )) {
-                // Drain any buffered stream events first
-                while (streamEvents.length > 0) {
-                    yield streamEvents.shift()!;
-                }
-
-                if (event.type === "run-complete") {
-                    runResult = event.result;
+                if (event.type === "run-complete" && "result" in event && event.result) {
+                    runResult = event.result as RunCompletion;
                     break;
                 }
-                yield event;
+                if (!usedStream) {
+                    yield event as ExecutionEvent;
+                }
             }
-
-            // Drain remaining stream events
-            while (streamEvents.length > 0) {
-                yield streamEvents.shift()!;
-            }
-            wsCleanup();
 
             if (!runResult) {
                 throw new Error("Run ended without completion payload");
@@ -361,88 +361,136 @@ export class Orchestrator {
     }
 
     /**
-     * Connect to the orchestrator's WebSocket stream for real-time events.
-     * Pushes events into the buffer array; caller drains between poll cycles.
-     * Returns a cleanup function to close the connection.
-     * Falls back silently if the WS endpoint is unavailable.
+     * Stream real-time events from the orchestrator via WebSocket.
+     * Yields events as they arrive. Returns on terminal events or WS close.
+     * Throws if the connection cannot be established.
      */
-    private connectEventStream(
+    private async *streamRun(
         promptId: string,
         runId: string,
-        _client: ModalOrchestratorClient,
-        buffer: ExecutionEvent[]
-    ): () => void {
+    ): AsyncGenerator<ExecutionEvent> {
         const baseUrl = OVERMIND_ORCHESTRATOR_URL()
             .replace(/\/+$/u, "")
             .replace(/^http/u, "ws");
         const wsUrl = `${baseUrl}/runs/${runId}/ws`;
-        let ws: WebSocket | null = null;
+
+        const ws = new WebSocket(wsUrl);
+
+        // Async queue: WS callbacks push, generator awaits
+        const pending: ExecutionEvent[] = [];
+        let notify: (() => void) | null = null;
+        let closed = false;
+        let wsError: Error | null = null;
+
+        const push = (event: ExecutionEvent) => {
+            pending.push(event);
+            notify?.();
+        };
+
+        const waitForEvent = () =>
+            new Promise<void>((resolve) => { notify = resolve; });
+
+        // Wait for connection
+        await new Promise<void>((resolve, reject) => {
+            ws.on("open", () => {
+                this.log(promptId, "modal", "ws stream: connected");
+                resolve();
+            });
+            ws.on("error", (err: Error) => {
+                reject(err);
+            });
+        });
+
+        ws.on("message", (data: Buffer) => {
+            try {
+                const raw = JSON.parse(data.toString());
+                const mapped = this.mapStreamEvent(raw);
+                if (mapped) push(mapped);
+            } catch {
+                // skip malformed
+            }
+        });
+
+        ws.on("close", () => {
+            closed = true;
+            notify?.();
+        });
+
+        ws.on("error", (err: Error) => {
+            wsError = err;
+            closed = true;
+            notify?.();
+        });
 
         try {
-            ws = new WebSocket(wsUrl);
-
-            ws.on("message", (data: Buffer) => {
-                try {
-                    const event = JSON.parse(data.toString());
-                    const eventType = event.event_type;
-
-                    if (eventType === "plan-ready") {
-                        buffer.push({
-                            type: "plan-ready",
-                            tasks: event.tasks,
-                        });
-                    } else if (eventType === "agent-spawned") {
-                        buffer.push({
-                            type: "agent-spawned",
-                            taskIndex: event.task_index,
-                            taskName: event.task_name,
-                            status: "spawned",
-                        });
-                    } else if (eventType === "agent-finished") {
-                        buffer.push({
-                            type: "agent-finished",
-                            taskIndex: event.task_index,
-                            taskName: event.task_name,
-                            status: "finished",
-                            summary: event.summary,
-                            filesChanged: event.files_changed,
-                        });
-                    } else if (eventType === "tool-use") {
-                        buffer.push({
-                            type: "tool-activity",
-                            taskIndex: event.task_index,
-                            taskName: event.task_name,
-                            toolName: event.tool_name,
-                            phase: "start",
-                        });
-                    } else if (eventType === "tool-result") {
-                        buffer.push({
-                            type: "tool-activity",
-                            taskIndex: event.task_index,
-                            taskName: event.task_name,
-                            toolName: event.tool_name,
-                            phase: "result",
-                            success: event.success,
-                            outputPreview: event.output_preview,
-                        });
-                    }
-                } catch {
-                    // Malformed message — skip
+            while (!closed || pending.length > 0) {
+                if (pending.length === 0 && !closed) {
+                    await waitForEvent();
                 }
-            });
-
-            ws.on("error", () => {
-                this.log(promptId, "modal", "ws stream: connection failed, using poll-only");
-            });
-        } catch {
-            this.log(promptId, "modal", "ws stream: could not connect, using poll-only");
-        }
-
-        return () => {
-            if (ws && ws.readyState === WebSocket.OPEN) {
-                ws.close();
+                while (pending.length > 0) {
+                    const event = pending.shift()!;
+                    yield event;
+                    if (event.type === "run-complete" || event.type === "error") {
+                        return;
+                    }
+                }
             }
-        };
+            if (wsError) throw wsError;
+        } finally {
+            if (ws.readyState === WebSocket.OPEN) ws.close();
+        }
+    }
+
+    /**
+     * Map a raw Python stream event (snake_case) to an ExecutionEvent.
+     * Returns null for unrecognized event types.
+     */
+    private mapStreamEvent(raw: Record<string, unknown>): ExecutionEvent | null {
+        const t = raw.event_type as string;
+        switch (t) {
+            case "plan-ready":
+                return { type: "plan-ready", tasks: raw.tasks as ExecutionEvent["tasks"] };
+            case "agent-spawned":
+                return {
+                    type: "agent-spawned",
+                    taskIndex: raw.task_index as number,
+                    taskName: raw.task_name as string,
+                    status: "spawned",
+                };
+            case "agent-finished":
+                return {
+                    type: "agent-finished",
+                    taskIndex: raw.task_index as number,
+                    taskName: raw.task_name as string,
+                    status: "finished",
+                    summary: raw.summary as string,
+                    filesChanged: raw.files_changed as string[],
+                };
+            case "tool-use":
+                return {
+                    type: "tool-activity",
+                    taskIndex: raw.task_index as number,
+                    taskName: raw.task_name as string,
+                    toolName: raw.tool_name as string,
+                    phase: "start",
+                };
+            case "tool-result":
+                return {
+                    type: "tool-activity",
+                    taskIndex: raw.task_index as number,
+                    taskName: raw.task_name as string,
+                    toolName: raw.tool_name as string,
+                    phase: "result",
+                    success: raw.success as boolean,
+                    outputPreview: raw.output_preview as string,
+                };
+            case "run-complete":
+                return { type: "run-complete" };
+            case "run-error":
+                return { type: "error", message: raw.error as string };
+            default:
+                return null;
+        }
     }
 
     /**
