@@ -14,7 +14,10 @@ import type { EvaluationResult } from "../../shared/protocol.js";
  * Invariants: Returned paths never contain backslashes.
  */
 export function normalizeRelativePath(relPath: string): string {
-    return relPath.replace(/\\/g, "/");
+    return relPath
+        .replace(/\\/g, "/")
+        .replace(/^\.\//, "")
+        .replace(/^\/+/, "");
 }
 
 /**

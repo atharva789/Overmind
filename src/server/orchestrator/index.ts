@@ -6,6 +6,7 @@
  */
 
 import fs from "node:fs";
+import WebSocket from "ws";
 import { nanoid } from "nanoid";
 import type { PromptEntry } from "../party.js";
 import type { EvaluationResult } from "../../shared/protocol.js";
@@ -147,6 +148,15 @@ export class Orchestrator {
             await client.createRun(runPayload.payload);
             yield { type: "stage", stage: STAGE_SPAWN };
 
+            // Start WS stream consumer in background for real-time events
+            const streamEvents: ExecutionEvent[] = [];
+            const wsCleanup = this.connectEventStream(
+                promptId,
+                runId,
+                client,
+                streamEvents
+            );
+
             let runResult: RunCompletion | null = null;
             for await (const event of this.pollRun(
                 promptId,
@@ -154,12 +164,23 @@ export class Orchestrator {
                 client,
                 STAGE_SPAWN
             )) {
+                // Drain any buffered stream events first
+                while (streamEvents.length > 0) {
+                    yield streamEvents.shift()!;
+                }
+
                 if (event.type === "run-complete") {
                     runResult = event.result;
                     break;
                 }
                 yield event;
             }
+
+            // Drain remaining stream events
+            while (streamEvents.length > 0) {
+                yield streamEvents.shift()!;
+            }
+            wsCleanup();
 
             if (!runResult) {
                 throw new Error("Run ended without completion payload");
@@ -337,6 +358,91 @@ export class Orchestrator {
 
             await sleep(OVERMIND_ORCHESTRATOR_POLL_MS());
         }
+    }
+
+    /**
+     * Connect to the orchestrator's WebSocket stream for real-time events.
+     * Pushes events into the buffer array; caller drains between poll cycles.
+     * Returns a cleanup function to close the connection.
+     * Falls back silently if the WS endpoint is unavailable.
+     */
+    private connectEventStream(
+        promptId: string,
+        runId: string,
+        _client: ModalOrchestratorClient,
+        buffer: ExecutionEvent[]
+    ): () => void {
+        const baseUrl = OVERMIND_ORCHESTRATOR_URL()
+            .replace(/\/+$/u, "")
+            .replace(/^http/u, "ws");
+        const wsUrl = `${baseUrl}/runs/${runId}/ws`;
+        let ws: WebSocket | null = null;
+
+        try {
+            ws = new WebSocket(wsUrl);
+
+            ws.on("message", (data: Buffer) => {
+                try {
+                    const event = JSON.parse(data.toString());
+                    const eventType = event.event_type;
+
+                    if (eventType === "plan-ready") {
+                        buffer.push({
+                            type: "plan-ready",
+                            tasks: event.tasks,
+                        });
+                    } else if (eventType === "agent-spawned") {
+                        buffer.push({
+                            type: "agent-spawned",
+                            taskIndex: event.task_index,
+                            taskName: event.task_name,
+                            status: "spawned",
+                        });
+                    } else if (eventType === "agent-finished") {
+                        buffer.push({
+                            type: "agent-finished",
+                            taskIndex: event.task_index,
+                            taskName: event.task_name,
+                            status: "finished",
+                            summary: event.summary,
+                            filesChanged: event.files_changed,
+                        });
+                    } else if (eventType === "tool-use") {
+                        buffer.push({
+                            type: "tool-activity",
+                            taskIndex: event.task_index,
+                            taskName: event.task_name,
+                            toolName: event.tool_name,
+                            phase: "start",
+                        });
+                    } else if (eventType === "tool-result") {
+                        buffer.push({
+                            type: "tool-activity",
+                            taskIndex: event.task_index,
+                            taskName: event.task_name,
+                            toolName: event.tool_name,
+                            phase: "result",
+                            success: event.success,
+                            outputPreview: event.output_preview,
+                        });
+                    }
+                } catch {
+                    // Malformed message — skip
+                }
+            });
+
+            ws.on("error", () => {
+                this.log(promptId, "modal", "ws stream: connection failed, using poll-only");
+            });
+        } catch {
+            this.log(promptId, "modal", "ws stream: could not connect, using poll-only");
+        }
+
+        return () => {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.close();
+            }
+        };
     }
 
     /**
