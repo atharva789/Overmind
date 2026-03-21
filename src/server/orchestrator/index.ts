@@ -150,34 +150,35 @@ export class Orchestrator {
             yield { type: "stage", stage: STAGE_SPAWN };
 
             let runResult: RunCompletion | null = null;
-            let usedStream = false;
 
-            // Try WS streaming first — yields events in real-time
+            // Stream events in real-time via WebSocket
             try {
                 for await (const event of this.streamRun(promptId, runId)) {
-                    usedStream = true;
                     if (event.type === "run-complete" || event.type === "error") {
-                        // WS got terminal event — poll once for actual file contents
+                        if (event.type === "error") {
+                            throw new Error(event.message ?? "Agent execution failed");
+                        }
                         break;
                     }
                     yield event;
                 }
-            } catch {
-                this.log(promptId, mode, "ws stream failed, falling back to poll");
-            }
 
-            // Poll for final result (always needed — WS doesn't send file content)
-            for await (const event of this.pollRun(
-                promptId,
-                runId,
-                client,
-                usedStream ? null : STAGE_SPAWN
-            )) {
-                if (event.type === "run-complete" && "result" in event && event.result) {
-                    runResult = event.result as RunCompletion;
-                    break;
-                }
-                if (!usedStream) {
+                // Stream finished — fetch final result with file contents
+                const status = await client.getRun(runId);
+                runResult = {
+                    files: status.files ?? [],
+                    summary: status.summary ?? null,
+                };
+            } catch (streamErr) {
+                // WS failed — fall back to poll loop
+                this.log(promptId, mode, `ws stream failed: ${streamErr}, falling back to poll`);
+                for await (const event of this.pollRun(
+                    promptId, runId, client, STAGE_SPAWN
+                )) {
+                    if (event.type === "run-complete" && "result" in event && event.result) {
+                        runResult = event.result as RunCompletion;
+                        break;
+                    }
                     yield event as ExecutionEvent;
                 }
             }
