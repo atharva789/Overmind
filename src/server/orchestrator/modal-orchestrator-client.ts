@@ -24,7 +24,7 @@ export interface RunStatus {
     status: "queued" | "running" | "completed" | "failed" | "canceled";
     stage?: string;
     detail?: string;
-    files?: Array<{ path: string; content: string }>;
+    files?: Array<{ path: string; content?: string }>;
     summary?: string;
     error?: string;
 }
@@ -46,7 +46,7 @@ const RunStatusSchema = z.object({
     stage: z.string().optional(),
     detail: z.string().optional(),
     files: z.array(
-        z.object({ path: z.string(), content: z.string() })
+        z.object({ path: z.string(), content: z.string().default("") })
     ).optional(),
     summary: z.string().optional(),
     error: z.string().optional(),

@@ -91,7 +91,7 @@ export interface AgentExecution {
 }
 
 interface RunCompletion {
-    files: Array<{ path: string; content: string }>;
+    files: Array<{ path: string; content?: string }>;
     summary: string | null;
 }
 
@@ -453,7 +453,7 @@ export class Orchestrator {
      */
     private filterAllowedFiles(
         promptId: string,
-        files: Array<{ path: string; content: string }>,
+        files: Array<{ path: string; content?: string }>,
         evaluation: EvaluationResult
     ): { allowed: Record<string, string>; rejected: string[] } {
         const isAllowedPath = buildAllowedPathChecker(
@@ -466,7 +466,7 @@ export class Orchestrator {
         for (const fileEntry of files) {
             const normalized = normalizeRelativePath(fileEntry.path);
             if (isAllowedPath(normalized)) {
-                allowed[normalized] = fileEntry.content;
+                allowed[normalized] = fileEntry.content ?? "";
             } else {
                 rejected.push(normalized);
             }
