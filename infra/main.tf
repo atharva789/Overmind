@@ -24,7 +24,7 @@ variable "account_id" {
 
 variable "ecr_image_tag" {
   type    = string
-  default = "v1.0"
+  default = "latest"
 }
 
 # SSM Parameter Store secrets — must match names in /overmind/* in SSM
