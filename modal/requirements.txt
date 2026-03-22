@@ -50,7 +50,7 @@ onnxruntime==1.24.3           # ONNX inference engine — fastembed backend
 numpy==2.4.3                  # Vector math — average_vectors in codebase_indexer
 flatbuffers==25.12.19         # onnxruntime dependency
 protobuf==6.33.5              # onnxruntime dependency
-packaging==26.0               # onnxruntime/fastembed dependency
+packaging==25.0               # onnxruntime/fastembed/langfuse dependency (langfuse requires <26.0)
 mmh3==5.2.1                   # fastembed dependency (MurmurHash)
 py_rust_stemmers==0.1.5       # fastembed dependency (text stemming)
 
