@@ -1,9 +1,13 @@
 """Session: per-run event queue for real-time streaming to frontend."""
 
 import asyncio
+import json
+import logging
 from typing import AsyncGenerator
 
 from stream_events import StreamEvent, RunComplete, RunError
+
+logger = logging.getLogger(__name__)
 
 # Active sessions keyed by run_id
 _sessions: dict[str, "Session"] = {}
@@ -13,8 +17,8 @@ class Session:
     """Holds an asyncio.Queue that agent_loop/subagent_loop push events into.
 
     Lifecycle:
-      1. POST /runs  → create_session(run_id)
-      2. WS /runs/{run_id}/ws → session.subscribe() drains the queue
+      1. POST /runs              → create_session(run_id)
+      2. WS /runs/{run_id}/ws    → session.subscribe() drains the queue
       3. RunComplete or RunError → subscriber returns, WS closes
       4. Cleanup via close()
     """
@@ -27,6 +31,11 @@ class Session:
     def emit(self, event: StreamEvent) -> None:
         """Fire-and-forget push. Safe to call from any coroutine in the loop."""
         if not self.closed:
+            logger.info(
+                "[real-time-tag] run_id=%s event=%s",
+                self.run_id,
+                json.dumps(event.model_dump(), default=str),
+            )
             self.queue.put_nowait(event)
 
     async def subscribe(self) -> AsyncGenerator[StreamEvent, None]:
