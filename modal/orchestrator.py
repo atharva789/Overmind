@@ -22,7 +22,8 @@ import httpx
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
-from openai import AsyncOpenAI
+from langfuse.openai import AsyncOpenAI
+from langfuse import get_client as get_langfuse_client, propagate_attributes
 
 from agent_schemas import (
     PlannerOutput,
@@ -70,7 +71,7 @@ from run_store import (
 from session import create_session, get_session, close_session
 from stream_events import (
     PlanReady, AgentSpawned, AgentFinished, AgentStatus,
-    ToolUse, ToolResult, RunComplete, RunError,
+    AgentThinking, ToolUse, ToolResult, RunComplete, RunError,
 )
 from utils import log, now_iso
 
@@ -194,16 +195,23 @@ def get_client() -> tuple[AsyncOpenAI, dict[str, Any]]:
     return client, ctx
 
 async def run_planner(client, user_query: str) -> PlannerOutput:
-    response = await client.beta.chat.completions.parse(
-        model=os.environ.get("MODEL_ID", "openai/gpt-oss-20b"),
-        messages=[
-            {"role": "system", "content": PLANNING_SYSTEM_PROMPT},
-            {"role": "user", "content": user_query},
-        ],
-        response_format=PlannerOutput,
-        temperature=0,
-    )
-    return response.choices[0].message.parsed
+    langfuse = get_langfuse_client()
+    with langfuse.start_as_current_observation(
+        as_type="span",
+        name="planner",
+        input={"query_length": len(user_query)},
+    ):
+        response = await client.beta.chat.completions.parse(
+            model=os.environ.get("MODEL_ID", "openai/gpt-oss-20b"),
+            messages=[
+                {"role": "system", "content": PLANNING_SYSTEM_PROMPT},
+                {"role": "user", "content": user_query},
+            ],
+            response_format=PlannerOutput,
+            temperature=0,
+        )
+        parsed = response.choices[0].message.parsed
+    return parsed
 
 async def subagent_loop(
     client, ctx, task: PlannerTask, req_files: dict[str, str],
@@ -214,109 +222,149 @@ async def subagent_loop(
     Uses the OpenAI SDK with native tool calling.
     Does not write to disk; all mutations go into the workspace dict.
     """
+    langfuse = get_langfuse_client()
 
-    messages: list[dict] = [
-        {"role": "system", "content": task.system_prompt},
-        {"role": "user", "content": task.user_prompt},
-    ]
-    workspace: dict[str, str] = {}
+    with langfuse.start_as_current_observation(
+        as_type="span",
+        name=f"subagent-{task_index}: {task.agent_name}",
+        input={"task_description": task.task_description},
+        metadata={"task_index": task_index, "max_rounds": MAX_AGENT_ROUNDS},
+    ) as subagent_span:
+        messages: list[dict] = [
+            {"role": "system", "content": task.system_prompt},
+            {"role": "user", "content": task.user_prompt},
+        ]
+        workspace: dict[str, str] = {}
+        final_round = 0
 
-    for round_num in range(1, MAX_AGENT_ROUNDS + 1):
-        if await should_cancel(run_id):
-            break
-        
-        log(f"subagent_loop: run_id={run_id} round={round_num}/{MAX_AGENT_ROUNDS}")
+        for round_num in range(1, MAX_AGENT_ROUNDS + 1):
+            final_round = round_num
+            if await should_cancel(run_id):
+                break
 
-        response = await client.chat.completions.create(
-            model=MODEL_ID,
-            messages=messages,
-            tools=TOOL_SCHEMAS,
-            tool_choice="auto",
-            temperature=0,
-        )
+            log(f"subagent_loop: run_id={run_id} round={round_num}/{MAX_AGENT_ROUNDS}")
 
-        msg = response.choices[0].message
-        # Preserve the assistant message (including tool_calls metadata).
-        messages.append(msg.model_dump(exclude_none=True))
+            # LLM call is auto-traced by the Langfuse OpenAI drop-in
+            response = await client.chat.completions.create(
+                model=MODEL_ID,
+                messages=messages,
+                tools=TOOL_SCHEMAS,
+                tool_choice="auto",
+                temperature=0,
+            )
 
-        # No tool calls → model decided it is done.
-        if not msg.tool_calls:
-            log(f"subagent_loop: no tool calls round={round_num}, finishing")
-            break
+            msg = response.choices[0].message
+            messages.append(msg.model_dump(exclude_none=True))
 
-        tool_name = ""
-        for tc in msg.tool_calls:
-            tool_name = tc.function.name
+            # Emit thinking event when the model produces reasoning text
+            if msg.content and session:
+                session.emit(AgentThinking.from_raw(
+                    task_index=task_index,
+                    task_name=task.agent_name,
+                    raw_content=msg.content,
+                ))
 
-            try:
-                args = json.loads(tc.function.arguments)
-            except (json.JSONDecodeError, TypeError):
-                log(f"subagent_loop: bad tool args round={round_num}")
+            if not msg.tool_calls:
+                log(f"subagent_loop: no tool calls round={round_num}, finishing")
+                break
+
+            tool_name = ""
+            for tc in msg.tool_calls:
+                tool_name = tc.function.name
+
+                try:
+                    args = json.loads(tc.function.arguments)
+                except (json.JSONDecodeError, TypeError):
+                    log(f"subagent_loop: bad tool args round={round_num}")
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": "Error: malformed tool arguments",
+                    })
+                    continue
+
+                if tool_name == "subagent_finished":
+                    summary = args.get("summary", "Changes applied")
+                    log(f"subagent_loop: finished round={round_num}")
+                    agent_result = AgentResult(
+                        summary=summary,
+                        files=[
+                            FileChange(path=p, content=c)
+                            for p, c in sorted(workspace.items())
+                        ],
+                    )
+                    if session:
+                        session.emit(AgentFinished(
+                            task_index=task_index,
+                            task_name=task.agent_name,
+                            status=AgentStatus.SUCCESSFUL,
+                            files_changed=list(workspace.keys()),
+                            summary=summary,
+                        ))
+                    subagent_span.update(
+                        output={"summary": summary, "rounds_used": round_num,
+                                "files_changed": list(workspace.keys())},
+                    )
+                    return agent_result
+
+                # Record tool execution as a child span
+                with langfuse.start_as_current_observation(
+                    as_type="span",
+                    name=f"tool:{tool_name}",
+                    input={"args_keys": list(args.keys()), "round": round_num},
+                ) as tool_span:
+                    if session:
+                        session.emit(ToolUse(
+                            task_index=task_index,
+                            task_name=task.agent_name,
+                            tool_name=tool_name,
+                        ))
+
+                    result = await execute_tool(tool_name, args, req_files, workspace, ctx)
+                    log(f"subagent_loop: tool={tool_name} result_len={len(result)}")
+
+                    tool_span.update(
+                        output={"result_length": len(result), "success": True},
+                    )
+
+                if session:
+                    session.emit(ToolResult.from_raw(
+                        task_index=task_index,
+                        task_name=task.agent_name,
+                        tool_name=tool_name,
+                        success=True,
+                        raw_output=result,
+                    ))
+
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tc.id,
-                    "content": "Error: malformed tool arguments",
+                    "content": result,
                 })
-                continue
 
-            if tool_name == "subagent_finished":
-                summary = args.get("summary", "Changes applied")
-                log(f"subagent_loop: finished round={round_num}")
-                agent_result = AgentResult(
-                    summary=summary,
-                    files=[
-                        FileChange(path=p, content=c)
-                        for p, c in sorted(workspace.items())
-                    ],
-                )
-                if session:
-                    session.emit(AgentFinished(
-                        task_index=task_index,
-                        task_name=task.agent_name,
-                        status=AgentStatus.SUCCESSFUL,
-                        files_changed=list(workspace.keys()),
-                        summary=summary,
-                    ))
-                return agent_result
-
-            if session:
-                session.emit(ToolUse(
-                    task_index=task_index,
-                    task_name=task.agent_name,
-                    tool_name=tool_name,
-                ))
-
-            result = await execute_tool(tool_name, args, req_files, workspace, ctx)
-            log(f"subagent_loop: tool={tool_name} result_len={len(result)}")
-
-            if session:
-                session.emit(ToolResult.from_raw(
-                    task_index=task_index,
-                    task_name=task.agent_name,
-                    tool_name=tool_name,
-                    success=True,
-                    raw_output=result,
-                ))
-
-            messages.append({
-                "role": "tool",
-                "tool_call_id": tc.id,
-                "content": result,
+            await update_run_record(run_id, {
+                "stage": STAGE_WORKING,
+                "detail": f"Round {round_num}: {tool_name}",
             })
 
-        await update_run_record(run_id, {
-            "stage": STAGE_WORKING,
-            "detail": f"Round {round_num}: {tool_name}",
-        })
+        hit_max = final_round >= MAX_AGENT_ROUNDS
+        subagent_span.update(
+            output={"summary": "max rounds reached" if hit_max else "completed",
+                    "rounds_used": final_round,
+                    "files_changed": list(workspace.keys()),
+                    "hit_max_rounds": hit_max},
+        )
 
-    log(f"subagent_loop: run_id={run_id} exhausted {MAX_AGENT_ROUNDS} rounds")
-    return AgentResult(
-        summary="Agent completed (max rounds reached)",
-        files=[
-            FileChange(path=p, content=c)
-            for p, c in sorted(workspace.items())
-        ],
-    )
+        if hit_max:
+            log(f"subagent_loop: run_id={run_id} exhausted {MAX_AGENT_ROUNDS} rounds")
+
+        return AgentResult(
+            summary="Agent completed (max rounds reached)" if hit_max else "Agent completed",
+            files=[
+                FileChange(path=p, content=c)
+                for p, c in sorted(workspace.items())
+            ],
+        )
 
 
 def build_eval_message(
@@ -350,6 +398,7 @@ async def agent_loop(
     or draft-plan to re-plan and spawn another round of subagents.
     Accumulates all file changes across rounds into a single workspace.
     """
+    langfuse = get_langfuse_client()
     pending_tasks = subagent_tasks
     workspace: dict[str, str] = {}
 
@@ -359,74 +408,86 @@ async def agent_loop(
 
         log(f"agent_loop: run_id={run_id} round={round_num}/{MAX_AGENT_ROUNDS}")
 
-        coroutines = []
-        for i, task in enumerate(pending_tasks.tasks):
-            if session:
-                session.emit(AgentSpawned(
-                    task_index=i,
-                    task_name=task.agent_name,
-                    task_description=task.task_description,
-                ))
-            coroutines.append(
-                subagent_loop(client, ctx, task, req_files, run_id, session, i)
-            )
-        subagent_results: list[AgentResult] = await asyncio.gather(*coroutines)
-
-        for res in subagent_results:
-            for fc in res.files:
-                workspace[fc.path] = fc.content
-
-        messages = build_eval_message(pending_tasks, subagent_results)
-
-        response = await client.chat.completions.create(
-            model=MODEL_ID,
-            messages=messages,
-            tools=TOOL_SCHEMAS[:2],
-            tool_choice="auto",
-            temperature=0.015,
-        )
-        msg = response.choices[0].message
-        messages.append(msg.model_dump(exclude_none=True))
-
-        if not msg.tool_calls:
-            log(f"agent_loop: no tool calls round={round_num}, finishing")
-            break
-
-        for tc in msg.tool_calls:
-            tool_name = tc.function.name
-
-            try:
-                args = json.loads(tc.function.arguments)
-            except (json.JSONDecodeError, TypeError):
-                log(f"agent_loop: bad tool args round={round_num}")
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tc.id,
-                    "content": "Error: malformed tool arguments",
-                })
-                continue
-
-            if tool_name == "planner_finished":
-                summary = args.get("summary", "Changes applied")
-                log(f"agent_loop: planner_finished round={round_num}")
-                return AgentResult(
-                    summary=summary,
-                    files=[
-                        FileChange(path=p, content=c)
-                        for p, c in sorted(workspace.items())
-                    ],
+        with langfuse.start_as_current_observation(
+            as_type="span",
+            name=f"agent-round-{round_num}",
+            input={"num_tasks": len(pending_tasks.tasks)},
+        ) as round_span:
+            coroutines = []
+            for i, task in enumerate(pending_tasks.tasks):
+                if session:
+                    session.emit(AgentSpawned(
+                        task_index=i,
+                        task_name=task.agent_name,
+                        task_description=task.task_description,
+                    ))
+                coroutines.append(
+                    subagent_loop(client, ctx, task, req_files, run_id, session, i)
                 )
+            subagent_results: list[AgentResult] = await asyncio.gather(*coroutines)
 
-            if tool_name == "draft-plan":
-                log(f"agent_loop: re-planning round={round_num}")
-                pending_tasks = await run_planner(
-                    client, args.get("plan", ""),
+            for res in subagent_results:
+                for fc in res.files:
+                    workspace[fc.path] = fc.content
+
+            # Evaluation LLM call (auto-traced by drop-in)
+            with langfuse.start_as_current_observation(
+                as_type="span",
+                name="evaluation",
+            ):
+                messages = build_eval_message(pending_tasks, subagent_results)
+                response = await client.chat.completions.create(
+                    model=MODEL_ID,
+                    messages=messages,
+                    tools=TOOL_SCHEMAS[:2],
+                    tool_choice="auto",
+                    temperature=0.015,
                 )
+                msg = response.choices[0].message
+                messages.append(msg.model_dump(exclude_none=True))
 
-        await update_run_record(run_id, {
-            "stage": STAGE_WORKING,
-            "detail": f"Planner round {round_num}",
-        })
+            if not msg.tool_calls:
+                log(f"agent_loop: no tool calls round={round_num}, finishing")
+                round_span.update(output={"decision": "no tool calls, finishing"})
+                break
+
+            for tc in msg.tool_calls:
+                tool_name = tc.function.name
+
+                try:
+                    args = json.loads(tc.function.arguments)
+                except (json.JSONDecodeError, TypeError):
+                    log(f"agent_loop: bad tool args round={round_num}")
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": "Error: malformed tool arguments",
+                    })
+                    continue
+
+                if tool_name == "planner_finished":
+                    summary = args.get("summary", "Changes applied")
+                    log(f"agent_loop: planner_finished round={round_num}")
+                    round_span.update(output={"decision": "planner_finished", "summary": summary})
+                    return AgentResult(
+                        summary=summary,
+                        files=[
+                            FileChange(path=p, content=c)
+                            for p, c in sorted(workspace.items())
+                        ],
+                    )
+
+                if tool_name == "draft-plan":
+                    log(f"agent_loop: re-planning round={round_num}")
+                    round_span.update(output={"decision": "re-plan"})
+                    pending_tasks = await run_planner(
+                        client, args.get("plan", ""),
+                    )
+
+            await update_run_record(run_id, {
+                "stage": STAGE_WORKING,
+                "detail": f"Planner round {round_num}",
+            })
 
     log(f"agent_loop: run_id={run_id} exhausted {MAX_AGENT_ROUNDS} rounds")
     return AgentResult(
@@ -442,8 +503,11 @@ async def run_worker(run_id: str, req: RunCreateRequest, session: "Session") -> 
     """
     Execute a run: run the agent loop and persist the result.
     Emits stream events to the session queue throughout execution.
+    Wraps the entire run in a Langfuse trace for end-to-end observability.
     """
     from session import Session, close_session
+
+    langfuse = get_langfuse_client()
 
     log(f"run_worker: start run_id={run_id} files={len(req.files)}")
     await mark_run_running(run_id)
@@ -455,22 +519,36 @@ async def run_worker(run_id: str, req: RunCreateRequest, session: "Session") -> 
         close_session(run_id)
         return
 
-    try:
-        client, ctx = get_client()
-        subagent_tasks = await run_planner(client, build_agent_user_message(req))
+    # Root trace for the entire run
+    with langfuse.start_as_current_observation(
+        as_type="span",
+        name=f"run:{run_id[:8]}",
+        input={"prompt": req.prompt, "num_files": len(req.files),
+               "prompt_id": req.promptId},
+    ) as root_span:
+        with propagate_attributes(
+            session_id=run_id,
+            tags=["orchestrator", f"files:{len(req.files)}"],
+            metadata={"run_id": run_id, "prompt_id": req.promptId,
+                      "model": MODEL_ID},
+        ):
+            try:
+                client, ctx = get_client()
+                subagent_tasks = await run_planner(client, build_agent_user_message(req))
 
-        session.emit(PlanReady(tasks=[
-            {"task_index": i, "task_name": t.agent_name, "task_description": t.task_description}
-            for i, t in enumerate(subagent_tasks.tasks)
-        ]))
+                session.emit(PlanReady(tasks=[
+                    {"task_index": i, "task_name": t.agent_name, "task_description": t.task_description}
+                    for i, t in enumerate(subagent_tasks.tasks)
+                ]))
 
-        result = await agent_loop(client, ctx, subagent_tasks, req.files, run_id, session)
-    except Exception as exc:
-        log(f"run_worker: run_id={run_id} error:\n{traceback.format_exc()}")
-        await mark_run_failed(run_id, STAGE_WORKING, "Agent execution failed.", str(exc))
-        session.emit(RunError(error=str(exc)))
-        close_session(run_id)
-        return
+                result = await agent_loop(client, ctx, subagent_tasks, req.files, run_id, session)
+            except Exception as exc:
+                log(f"run_worker: run_id={run_id} error:\n{traceback.format_exc()}")
+                await mark_run_failed(run_id, STAGE_WORKING, "Agent execution failed.", str(exc))
+                session.emit(RunError(error=str(exc)))
+                root_span.update(output={"error": str(exc)})
+                close_session(run_id)
+                return
 
     log(f"run_worker: run_id={run_id} completed files={len(result.files)}")
     await mark_run_completed(run_id, result)

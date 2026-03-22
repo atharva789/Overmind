@@ -50,6 +50,31 @@ class AgentFinished(StreamEvent):
     summary: str = ""
 
 
+# ── Thinking ──────────────────────────────────────────────────────────────────
+
+MAX_THINKING_CHARS = 300
+
+
+class AgentThinking(StreamEvent):
+    event_type: str = "agent-thinking"
+    task_index: int
+    task_name: str
+    content: str = ""
+
+    @classmethod
+    def from_raw(
+        cls,
+        task_index: int,
+        task_name: str,
+        raw_content: str,
+    ) -> "AgentThinking":
+        return cls(
+            task_index=task_index,
+            task_name=task_name,
+            content=truncate(raw_content, MAX_THINKING_CHARS),
+        )
+
+
 # ── Tools ─────────────────────────────────────────────────────────────────────
 
 class ToolUse(StreamEvent):

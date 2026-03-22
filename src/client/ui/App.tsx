@@ -94,7 +94,8 @@ type Action =
     | { type: "MERGE_ERROR"; message: string }
     | { type: "EXECUTION_PLAN_READY"; promptId: string; tasks: Array<{ taskIndex: number; taskName: string; taskDescription: string }> }
     | { type: "EXECUTION_AGENT_UPDATE"; promptId: string; taskIndex: number; taskName: string; status: "spawned" | "working" | "finished"; summary?: string; filesChanged?: string[] }
-    | { type: "EXECUTION_TOOL_ACTIVITY"; promptId: string; taskIndex: number; taskName: string; toolName: string; phase: "start" | "result"; success?: boolean; outputPreview?: string };
+    | { type: "EXECUTION_TOOL_ACTIVITY"; promptId: string; taskIndex: number; taskName: string; toolName: string; phase: "start" | "result"; success?: boolean; outputPreview?: string }
+    | { type: "EXECUTION_AGENT_THINKING"; promptId: string; taskIndex: number; taskName: string; content: string };
 
 function addOutput(
     outputs: OutputEntry[],
@@ -425,6 +426,20 @@ function reducer(state: AppState, action: Action): AppState {
             };
         }
 
+        case "EXECUTION_AGENT_THINKING": {
+            if (state.execution?.promptId !== action.promptId) return state;
+            return {
+                ...state,
+                execution: {
+                    ...state.execution,
+                    activeThinking: {
+                        ...state.execution.activeThinking,
+                        [action.taskIndex]: action.content,
+                    },
+                },
+            };
+        }
+
         default:
             return state;
     }
@@ -651,6 +666,15 @@ export default function App({ connection, session, inviteCode }: AppProps): Reac
                         phase: msg.payload.phase,
                         success: msg.payload.success,
                         outputPreview: msg.payload.outputPreview,
+                    });
+                    break;
+                case "execution-agent-thinking":
+                    dispatch({
+                        type: "EXECUTION_AGENT_THINKING",
+                        promptId: msg.payload.promptId,
+                        taskIndex: msg.payload.taskIndex,
+                        taskName: msg.payload.taskName,
+                        content: msg.payload.content,
                     });
                     break;
             }

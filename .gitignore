@@ -14,8 +14,7 @@ command_logs/
 
 # claude git worktrees
 .claude/worktrees/friendly-goldstine
-*AUDIT.md
-AUDIT.md
+audit/
 
 # Terraform
 infra/.terraform/

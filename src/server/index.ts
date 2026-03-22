@@ -1022,6 +1022,19 @@ function handleExecutionEvent(
             break;
         }
 
+        case "agent-thinking": {
+            party.sendTo(entry.connectionId, {
+                type: "execution-agent-thinking",
+                payload: {
+                    promptId: entry.promptId,
+                    taskIndex: event.taskIndex ?? 0,
+                    taskName: event.taskName ?? "",
+                    content: event.thinking ?? "",
+                },
+            });
+            break;
+        }
+
         case "error": {
             party.sendTo(entry.connectionId, {
                 type: "error",

@@ -317,6 +317,16 @@ const ExecutionToolActivityMessage = z.object({
     }),
 });
 
+const ExecutionAgentThinkingMessage = z.object({
+    type: z.literal("execution-agent-thinking"),
+    payload: z.object({
+        promptId: z.string(),
+        taskIndex: z.number(),
+        taskName: z.string(),
+        content: z.string(),
+    }),
+});
+
 export const ServerMessageSchema = z.discriminatedUnion("type", [
     JoinAckMessage,
     MemberJoinedMessage,
@@ -344,6 +354,7 @@ export const ServerMessageSchema = z.discriminatedUnion("type", [
     ExecutionPlanReadyMessage,
     ExecutionAgentUpdateMessage,
     ExecutionToolActivityMessage,
+    ExecutionAgentThinkingMessage,
 ]);
 
 export type ServerMessage = z.infer<typeof ServerMessageSchema>;

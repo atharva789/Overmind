@@ -28,6 +28,7 @@ export interface ExecutionState {
     completed: boolean;
     tasks?: TaskState[];
     activeTools?: Record<number, ToolActivity>;
+    activeThinking?: Record<number, string>;
 }
 
 interface ExecutionViewProps {
@@ -50,7 +51,7 @@ const STATUS_ICON: Record<string, string> = {
     finished: "✓",
 };
 
-function TaskPanel({ task, tool }: { task: TaskState; tool?: ToolActivity }): React.ReactElement {
+function TaskPanel({ task, tool, thinking }: { task: TaskState; tool?: ToolActivity; thinking?: string }): React.ReactElement {
     const icon = STATUS_ICON[task.status] ?? "◯";
     const isActive = task.status === "spawned" || task.status === "working";
     const isDone = task.status === "finished";
@@ -63,6 +64,11 @@ function TaskPanel({ task, tool }: { task: TaskState; tool?: ToolActivity }): Re
                     {" "}{task.taskName}
                 </Text>
             </Box>
+            {thinking && isActive && (
+                <Box marginLeft={3}>
+                    <Text color="yellow" italic>{"💭 "}{thinking}</Text>
+                </Box>
+            )}
             {tool && isActive && (
                 <Box marginLeft={3}>
                     <Text dimColor>
@@ -122,6 +128,7 @@ export default function ExecutionView({
                         key={task.taskIndex}
                         task={task}
                         tool={execution.activeTools?.[task.taskIndex]}
+                        thinking={execution.activeThinking?.[task.taskIndex]}
                     />
                 ))}
                 {execution.stage && (

@@ -57,6 +57,7 @@ export interface ExecutionEvent {
     | "agent-spawned"
     | "agent-finished"
     | "tool-activity"
+    | "agent-thinking"
     | "run-complete";
     stage?: string;
     detail?: string;
@@ -83,6 +84,7 @@ export interface ExecutionEvent {
     phase?: "start" | "result";
     success?: boolean;
     outputPreview?: string;
+    thinking?: string;
 }
 
 export interface AgentExecution {
@@ -484,6 +486,13 @@ export class Orchestrator {
                     phase: "result",
                     success: raw.success as boolean,
                     outputPreview: raw.output_preview as string,
+                };
+            case "agent-thinking":
+                return {
+                    type: "agent-thinking",
+                    taskIndex: raw.task_index as number,
+                    taskName: raw.task_name as string,
+                    thinking: raw.content as string,
                 };
             case "run-complete":
                 return { type: "run-complete" };

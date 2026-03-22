@@ -9,7 +9,7 @@
   "containerDefinitions": [
     {
       "name": "overmind-container",
-      "image": "048270140082.dkr.ecr.us-east-2.amazonaws.com/overmind-orchestrator-repo:v2.2",
+      "image": "048270140082.dkr.ecr.us-east-2.amazonaws.com/overmind-orchestrator-repo:v3.0",
       "essential": true,
       "portMappings": [
         {
