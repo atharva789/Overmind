@@ -1,9 +1,22 @@
 import { jsx as _jsx, jsxs as _jsxs } from "react/jsx-runtime";
+/**
+ * Purpose: Root TUI component that owns all client-side state
+ *          and routes WebSocket messages into reducer actions.
+ * High-level behavior: Uses a useReducer with a unified
+ *          `history: HistoryEntry[]` array. Every event
+ *          (prompts, statuses, agent streams, completions)
+ *          appends to history so the user sees a scrollable
+ *          chat log instead of ephemeral replacements.
+ * Assumptions: Connection and Session are injected as props.
+ * Invariants: State is never mutated; all updates produce new
+ *             objects via spread. Prompt content is never
+ *             broadcast to non-host members.
+ */
 import { useReducer, useEffect, useCallback } from "react";
 import { Box, Text, useApp, useInput, useStdout } from "ink";
 import StatusBar from "./StatusBar.js";
 import PartyPanel from "./PartyPanel.js";
-import OutputView from "./OutputView.js";
+import HistoryView from "./HistoryView.js";
 import ActivityFeed from "./ActivityFeed.js";
 import PromptInput from "./PromptInput.js";
 import ReviewPanel from "./ReviewPanel.js";
@@ -11,15 +24,14 @@ import ExecutionView from "./ExecutionView.js";
 const initialState = {
     myUsername: "",
     members: [],
-    outputs: [],
+    history: [],
+    activePromptId: null,
+    expandedEntryId: null,
     events: [],
     connectionStatus: "disconnected",
-    currentPromptId: null,
-    promptContents: {},
     isHost: false,
     partyCode: "",
     reviewQueue: [],
-    execution: null,
     memberExecutions: {},
     viewingMember: null,
     executionBackendAvailable: true,
@@ -28,19 +40,26 @@ const initialState = {
     mergeInProgress: false,
     mergeStage: null,
 };
-function addOutput(outputs, promptId, status, message, promptContent) {
-    return [
-        ...outputs,
-        {
-            id: `${promptId}-${status}-${Date.now()}`,
-            promptId,
-            status,
-            message,
-            timestamp: Date.now(),
-            promptContent,
-        },
-    ];
+// ─── Helpers ───
+/** Create a unique entry id from a prefix and timestamp. */
+function entryId(prefix) {
+    return `${prefix}-${Date.now()}`;
 }
+/**
+ * Cap for the in-memory history array. Prevents unbounded
+ * memory growth during long sessions. When exceeded, the
+ * oldest entries are dropped.
+ */
+const MAX_HISTORY_ENTRIES = 500;
+/** Append a history entry immutably, capping total size. */
+function appendHistory(history, entry) {
+    const next = [...history, entry];
+    if (next.length > MAX_HISTORY_ENTRIES) {
+        return next.slice(next.length - MAX_HISTORY_ENTRIES);
+    }
+    return next;
+}
+// ─── Reducer ───
 function reducer(state, action) {
     switch (action.type) {
         case "CONNECTED":
@@ -66,58 +85,113 @@ function reducer(state, action) {
                 ...state,
                 members: [
                     ...state.members,
-                    { username: action.username, isHost: false, status: "idle" },
+                    {
+                        username: action.username,
+                        isHost: false,
+                        status: "idle",
+                    },
                 ],
             };
         case "MEMBER_LEFT":
             return {
                 ...state,
                 members: state.members.filter((m) => m.username !== action.username),
-                viewingMember: state.viewingMember === action.username ? null : state.viewingMember,
+                viewingMember: state.viewingMember === action.username
+                    ? null
+                    : state.viewingMember,
             };
         case "MEMBER_STATUS":
             return {
                 ...state,
-                members: state.members.map((m) => m.username === action.username ? { ...m, status: action.status } : m),
+                members: state.members.map((m) => m.username === action.username
+                    ? { ...m, status: action.status }
+                    : m),
             };
         case "LOCAL_PROMPT_SUBMITTED":
             return {
                 ...state,
-                currentPromptId: action.promptId,
+                activePromptId: action.promptId,
                 viewingMember: null,
-                promptContents: { ...state.promptContents, [action.promptId]: action.content },
+                history: appendHistory(state.history, {
+                    kind: "user-prompt",
+                    id: entryId("prompt"),
+                    promptId: action.promptId,
+                    content: action.content,
+                    timestamp: Date.now(),
+                }),
             };
         case "PROMPT_QUEUED":
             return {
                 ...state,
-                outputs: addOutput(state.outputs, action.promptId, "queued", `Position: ${action.position}`),
+                history: appendHistory(state.history, {
+                    kind: "status",
+                    id: entryId("queued"),
+                    promptId: action.promptId,
+                    status: "queued",
+                    message: `Position: ${action.position}`,
+                    timestamp: Date.now(),
+                }),
             };
         case "PROMPT_GREENLIT":
             return {
                 ...state,
-                outputs: addOutput(state.outputs, action.promptId, "greenlit", action.reasoning, state.promptContents[action.promptId]),
+                history: appendHistory(state.history, {
+                    kind: "status",
+                    id: entryId("greenlit"),
+                    promptId: action.promptId,
+                    status: "greenlit",
+                    message: action.reasoning,
+                    timestamp: Date.now(),
+                }),
             };
         case "FEATURE_CREATED":
             return {
                 ...state,
-                outputs: addOutput(state.outputs, action.promptId, "feature-created", `Assigned to New Core Feature: ${action.title}`, state.promptContents[action.promptId]),
+                history: appendHistory(state.history, {
+                    kind: "status",
+                    id: entryId("feature"),
+                    promptId: action.promptId,
+                    status: "feature-created",
+                    message: `Assigned to New Core Feature: ${action.title}`,
+                    timestamp: Date.now(),
+                }),
             };
         case "PROMPT_REDLIT":
             return {
                 ...state,
-                outputs: addOutput(state.outputs, action.promptId, "redlit", action.reasoning, state.promptContents[action.promptId]),
+                history: appendHistory(state.history, {
+                    kind: "status",
+                    id: entryId("redlit"),
+                    promptId: action.promptId,
+                    status: "redlit",
+                    message: `${action.reasoning}${action.conflicts.length > 0 ? `\nConflicts: ${action.conflicts.join(", ")}` : ""}`,
+                    timestamp: Date.now(),
+                }),
             };
         case "PROMPT_APPROVED":
             return {
                 ...state,
-                outputs: addOutput(state.outputs, action.promptId, "approved", "Approved by host"),
+                history: appendHistory(state.history, {
+                    kind: "status",
+                    id: entryId("approved"),
+                    promptId: action.promptId,
+                    status: "approved",
+                    message: "Approved by host",
+                    timestamp: Date.now(),
+                }),
             };
         case "PROMPT_DENIED":
             return {
                 ...state,
-                outputs: addOutput(state.outputs, action.promptId, "denied", action.reason),
-                currentPromptId: null,
-                execution: null,
+                activePromptId: null,
+                history: appendHistory(state.history, {
+                    kind: "status",
+                    id: entryId("denied"),
+                    promptId: action.promptId,
+                    status: "denied",
+                    message: action.reason,
+                    timestamp: Date.now(),
+                }),
             };
         case "HOST_REVIEW_REQUEST":
             return {
@@ -141,48 +215,56 @@ function reducer(state, action) {
         case "EXECUTION_QUEUED":
             return {
                 ...state,
-                execution: {
+                history: appendHistory(state.history, {
+                    kind: "status",
+                    id: entryId("exec-q"),
                     promptId: action.promptId,
-                    stage: null,
-                    files: [],
-                    summary: null,
-                    completed: false,
-                },
+                    status: "execution-queued",
+                    message: "Queued for execution",
+                    timestamp: Date.now(),
+                }),
             };
         case "EXECUTION_UPDATE":
-            if (state.execution?.promptId !== action.promptId)
-                return state;
             return {
                 ...state,
-                execution: { ...state.execution, stage: action.stage },
+                history: appendHistory(state.history, {
+                    kind: "agent-event",
+                    id: entryId("exec-upd"),
+                    promptId: action.promptId,
+                    eventType: "stage",
+                    data: { stage: action.stage },
+                    timestamp: Date.now(),
+                }),
             };
         case "EXECUTION_COMPLETE": {
-            if (state.execution?.promptId !== action.promptId)
-                return state;
             const hasFiles = action.files.length > 0;
             const hitMaxRounds = action.summary.includes("max rounds reached");
-            let status;
-            let completeMsg;
+            let summary;
             if (hasFiles) {
                 const fileList = action.files
-                    .map(f => `  ${f.path} (+${f.linesAdded}/-${f.linesRemoved})`)
+                    .map((f) => `  ${f.path} (+${f.linesAdded}/-${f.linesRemoved})`)
                     .join("\n");
-                completeMsg = `${action.summary}\n${fileList}`;
-                status = "complete";
+                summary = `${action.summary}\n${fileList}`;
             }
             else if (hitMaxRounds) {
-                completeMsg = `Execution failed: agent exhausted all rounds without producing changes.`;
-                status = "error";
+                summary =
+                    "Execution failed: agent exhausted all " +
+                        "rounds without producing changes.";
             }
             else {
-                completeMsg = `${action.summary}\n  No files were changed.`;
-                status = "complete";
+                summary = `${action.summary}\n  No files were changed.`;
             }
             return {
                 ...state,
-                outputs: addOutput(state.outputs, action.promptId, status, completeMsg),
-                execution: null,
-                currentPromptId: null,
+                activePromptId: null,
+                history: appendHistory(state.history, {
+                    kind: "completion",
+                    id: entryId("complete"),
+                    promptId: action.promptId,
+                    files: action.files,
+                    summary,
+                    timestamp: Date.now(),
+                }),
             };
         }
         case "MEMBER_EXECUTION_UPDATE":
@@ -196,8 +278,8 @@ function reducer(state, action) {
                         files: [],
                         summary: null,
                         completed: false,
-                    }
-                }
+                    },
+                },
             };
         case "MEMBER_EXECUTION_COMPLETE":
             return {
@@ -210,8 +292,8 @@ function reducer(state, action) {
                         files: action.files,
                         summary: action.summary,
                         completed: true,
-                    }
-                }
+                    },
+                },
             };
         case "SYSTEM_STATUS":
             return {
@@ -223,19 +305,27 @@ function reducer(state, action) {
                 ...state,
                 events: [
                     ...state.events,
-                    { username: action.username, event: action.event, timestamp: action.timestamp },
+                    {
+                        username: action.username,
+                        event: action.event,
+                        timestamp: action.timestamp,
+                    },
                 ],
             };
         case "ERROR":
-            if (action.code === "HOST_DISCONNECTED" || action.code === "PARTY_ENDED") {
-                return { ...state, partyEnded: true, errorMessage: action.message };
+            if (action.code === "HOST_DISCONNECTED" ||
+                action.code === "PARTY_ENDED") {
+                return {
+                    ...state,
+                    partyEnded: true,
+                    errorMessage: action.message,
+                };
             }
             if (action.code === "EXECUTION_FAILED") {
                 return {
                     ...state,
                     errorMessage: action.message,
-                    currentPromptId: null,
-                    execution: null,
+                    activePromptId: null,
                 };
             }
             return { ...state, errorMessage: action.message };
@@ -244,21 +334,46 @@ function reducer(state, action) {
         case "SHELL_OUTPUT":
             return {
                 ...state,
-                outputs: addOutput(state.outputs, `shell-${Date.now()}`, "complete", `$ ${action.command}\n${action.output}`),
+                history: appendHistory(state.history, {
+                    kind: "shell",
+                    id: entryId("shell"),
+                    command: action.command,
+                    output: action.output,
+                    timestamp: Date.now(),
+                }),
             };
         case "MERGE_UPDATE":
             return {
                 ...state,
                 mergeInProgress: true,
                 mergeStage: action.stage,
+                history: appendHistory(state.history, {
+                    kind: "merge",
+                    id: entryId("merge-upd"),
+                    message: action.stage,
+                    status: "progress",
+                    timestamp: Date.now(),
+                }),
             };
         case "MERGE_COMPLETE": {
-            const mergeMsg = `Merge complete: ${action.filesResolved} file(s) resolved on branch ${action.branchName}${action.prUrl ? `\nPR: ${action.prUrl}` : ""}${action.hasLowConfidence ? "\n⚠ Some resolutions have low confidence" : ""}`;
+            const mergeMsg = `Merge complete: ${action.filesResolved} ` +
+                `file(s) resolved on branch ` +
+                `${action.branchName}` +
+                (action.prUrl ? `\nPR: ${action.prUrl}` : "") +
+                (action.hasLowConfidence
+                    ? "\nSome resolutions have low confidence"
+                    : "");
             return {
                 ...state,
                 mergeInProgress: false,
                 mergeStage: null,
-                outputs: addOutput(state.outputs, `merge-${Date.now()}`, "complete", mergeMsg),
+                history: appendHistory(state.history, {
+                    kind: "merge",
+                    id: entryId("merge-done"),
+                    message: mergeMsg,
+                    status: "complete",
+                    timestamp: Date.now(),
+                }),
             };
         }
         case "MERGE_ERROR":
@@ -266,13 +381,31 @@ function reducer(state, action) {
                 ...state,
                 mergeInProgress: false,
                 mergeStage: null,
-                outputs: addOutput(state.outputs, `merge-${Date.now()}`, "error", `Merge failed: ${action.message}`),
+                history: appendHistory(state.history, {
+                    kind: "merge",
+                    id: entryId("merge-err"),
+                    message: `Merge failed: ${action.message}`,
+                    status: "error",
+                    timestamp: Date.now(),
+                }),
             };
+        case "TOGGLE_EXPAND": {
+            // Find the most recent agent-event entry
+            const lastAgentEvent = [...state.history]
+                .reverse()
+                .find((e) => e.kind === "agent-event");
+            if (!lastAgentEvent)
+                return state;
+            const nextId = state.expandedEntryId === lastAgentEvent.id
+                ? null
+                : lastAgentEvent.id;
+            return { ...state, expandedEntryId: nextId };
+        }
         default:
             return state;
     }
 }
-export default function App({ connection, session, inviteCode }) {
+export default function App({ connection, session, inviteCode, }) {
     const [state, dispatch] = useReducer(reducer, initialState);
     const { stdout } = useStdout();
     const height = stdout?.rows ?? 30;
@@ -283,20 +416,40 @@ export default function App({ connection, session, inviteCode }) {
             exit();
             return;
         }
+        // Ctrl+O: toggle expand on most recent
+        // agent-event entry
+        if (key.ctrl && input === "o") {
+            dispatch({ type: "TOGGLE_EXPAND" });
+            return;
+        }
         // Screen Viewing (Ctrl+1...8)
-        if (key.ctrl && input >= "1" && input <= "8") {
+        if (key.ctrl &&
+            input >= "1" &&
+            input <= "8") {
             const index = parseInt(input, 10) - 1;
-            if (index >= 0 && index < state.members.length) {
+            if (index >= 0 &&
+                index < state.members.length) {
                 const target = state.members[index].username;
                 if (target === state.myUsername) {
-                    dispatch({ type: "SET_VIEWING", username: null });
+                    dispatch({
+                        type: "SET_VIEWING",
+                        username: null,
+                    });
                 }
                 else {
-                    dispatch({ type: "SET_VIEWING", username: target });
+                    dispatch({
+                        type: "SET_VIEWING",
+                        username: target,
+                    });
                 }
             }
         }
-    }, [state.partyEnded, state.members, state.myUsername, exit]));
+    }, [
+        state.partyEnded,
+        state.members,
+        state.myUsername,
+        exit,
+    ]));
     // Subscribe to connection events
     useEffect(() => {
         const onConnected = () => dispatch({ type: "CONNECTED" });
@@ -325,10 +478,16 @@ export default function App({ connection, session, inviteCode }) {
                     });
                     break;
                 case "member-joined":
-                    dispatch({ type: "MEMBER_JOINED", username: msg.payload.username });
+                    dispatch({
+                        type: "MEMBER_JOINED",
+                        username: msg.payload.username,
+                    });
                     break;
                 case "member-left":
-                    dispatch({ type: "MEMBER_LEFT", username: msg.payload.username });
+                    dispatch({
+                        type: "MEMBER_LEFT",
+                        username: msg.payload.username,
+                    });
                     break;
                 case "member-status":
                     dispatch({
@@ -360,7 +519,10 @@ export default function App({ connection, session, inviteCode }) {
                     });
                     break;
                 case "prompt-approved":
-                    dispatch({ type: "PROMPT_APPROVED", promptId: msg.payload.promptId });
+                    dispatch({
+                        type: "PROMPT_APPROVED",
+                        promptId: msg.payload.promptId,
+                    });
                     break;
                 case "feature-created":
                     dispatch({
@@ -387,10 +549,17 @@ export default function App({ connection, session, inviteCode }) {
                     });
                     break;
                 case "execution-queued":
-                    dispatch({ type: "EXECUTION_QUEUED", promptId: msg.payload.promptId });
+                    dispatch({
+                        type: "EXECUTION_QUEUED",
+                        promptId: msg.payload.promptId,
+                    });
                     break;
                 case "execution-update":
-                    dispatch({ type: "EXECUTION_UPDATE", promptId: msg.payload.promptId, stage: msg.payload.stage });
+                    dispatch({
+                        type: "EXECUTION_UPDATE",
+                        promptId: msg.payload.promptId,
+                        stage: msg.payload.stage,
+                    });
                     break;
                 case "execution-complete":
                     dispatch({
@@ -432,10 +601,17 @@ export default function App({ connection, session, inviteCode }) {
                     });
                     break;
                 case "error":
-                    dispatch({ type: "ERROR", message: msg.payload.message, code: msg.payload.code });
+                    dispatch({
+                        type: "ERROR",
+                        message: msg.payload.message,
+                        code: msg.payload.code,
+                    });
                     break;
                 case "merge-update":
-                    dispatch({ type: "MERGE_UPDATE", stage: msg.payload.stage });
+                    dispatch({
+                        type: "MERGE_UPDATE",
+                        stage: msg.payload.stage,
+                    });
                     break;
                 case "merge-complete":
                     dispatch({
@@ -448,7 +624,10 @@ export default function App({ connection, session, inviteCode }) {
                     });
                     break;
                 case "merge-error":
-                    dispatch({ type: "MERGE_ERROR", message: msg.payload.message });
+                    dispatch({
+                        type: "MERGE_ERROR",
+                        message: msg.payload.message,
+                    });
                     break;
             }
         };
@@ -462,22 +641,37 @@ export default function App({ connection, session, inviteCode }) {
             return;
         // Slash commands
         if (content.startsWith("/")) {
-            const cmd = content.slice(1).trim().toLowerCase();
+            const cmd = content
+                .slice(1)
+                .trim()
+                .toLowerCase();
             if (cmd === "invite") {
                 const code = inviteCode ?? state.partyCode;
                 if (code) {
                     import("node:child_process").then(({ execSync }) => {
                         try {
                             execSync(`printf '%s' ${JSON.stringify(code)} | pbcopy`);
-                            dispatch({ type: "SHELL_OUTPUT", output: `Invite code copied: ${code}`, command: "/invite" });
+                            dispatch({
+                                type: "SHELL_OUTPUT",
+                                output: `Invite code copied: ${code}`,
+                                command: "/invite",
+                            });
                         }
                         catch {
-                            dispatch({ type: "SHELL_OUTPUT", output: `Invite code: ${code} (clipboard copy failed)`, command: "/invite" });
+                            dispatch({
+                                type: "SHELL_OUTPUT",
+                                output: `Invite code: ${code} (clipboard copy failed)`,
+                                command: "/invite",
+                            });
                         }
                     });
                 }
                 else {
-                    dispatch({ type: "SHELL_OUTPUT", output: "No invite code available.", command: "/invite" });
+                    dispatch({
+                        type: "SHELL_OUTPUT",
+                        output: "No invite code available.",
+                        command: "/invite",
+                    });
                 }
                 return;
             }
@@ -488,18 +682,36 @@ export default function App({ connection, session, inviteCode }) {
             }
             if (cmd === "merge") {
                 if (!state.isHost) {
-                    dispatch({ type: "SHELL_OUTPUT", output: "Only the host can run /merge.", command: "/merge" });
+                    dispatch({
+                        type: "SHELL_OUTPUT",
+                        output: "Only the host can run /merge.",
+                        command: "/merge",
+                    });
                     return;
                 }
                 if (state.mergeInProgress) {
-                    dispatch({ type: "SHELL_OUTPUT", output: "Merge already in progress.", command: "/merge" });
+                    dispatch({
+                        type: "SHELL_OUTPUT",
+                        output: "Merge already in progress.",
+                        command: "/merge",
+                    });
                     return;
                 }
-                connection.send({ type: "merge-request", payload: {} });
-                dispatch({ type: "MERGE_UPDATE", stage: "Starting merge..." });
+                connection.send({
+                    type: "merge-request",
+                    payload: {},
+                });
+                dispatch({
+                    type: "MERGE_UPDATE",
+                    stage: "Starting merge...",
+                });
                 return;
             }
-            dispatch({ type: "SHELL_OUTPUT", output: `Unknown command: /${cmd}\nAvailable: /invite, /leave, /merge`, command: `/${cmd}` });
+            dispatch({
+                type: "SHELL_OUTPUT",
+                output: `Unknown command: /${cmd}\nAvailable: /invite, /leave, /merge`,
+                command: `/${cmd}`,
+            });
             return;
         }
         // Shell commands
@@ -514,20 +726,43 @@ export default function App({ connection, session, inviteCode }) {
                         timeout: 10000,
                         cwd: process.cwd(),
                     }).trim();
-                    dispatch({ type: "SHELL_OUTPUT", output: output || "(no output)", command: cmd });
+                    dispatch({
+                        type: "SHELL_OUTPUT",
+                        output: output || "(no output)",
+                        command: cmd,
+                    });
                 }
                 catch (err) {
-                    const msg = err instanceof Error ? err.message : String(err);
-                    dispatch({ type: "SHELL_OUTPUT", output: `Error: ${msg}`, command: cmd });
+                    const msg = err instanceof Error
+                        ? err.message
+                        : String(err);
+                    dispatch({
+                        type: "SHELL_OUTPUT",
+                        output: `Error: ${msg}`,
+                        command: cmd,
+                    });
                 }
             });
             return;
         }
-        if (state.currentPromptId)
+        if (state.activePromptId)
             return;
-        dispatch({ type: "LOCAL_PROMPT_SUBMITTED", promptId, content });
+        dispatch({
+            type: "LOCAL_PROMPT_SUBMITTED",
+            promptId,
+            content,
+        });
         session.submitPrompt(promptId, content);
-    }, [session, state.currentPromptId, inviteCode, state.partyCode, connection, exit]);
+    }, [
+        session,
+        state.activePromptId,
+        inviteCode,
+        state.partyCode,
+        connection,
+        exit,
+        state.isHost,
+        state.mergeInProgress,
+    ]);
     const handleTyping = useCallback(() => {
         session.sendStatusUpdate("typing");
     }, [session]);
@@ -549,7 +784,9 @@ export default function App({ connection, session, inviteCode }) {
         dispatch({ type: "REVIEW_SHIFT" });
     }, [connection]);
     const currentReview = state.reviewQueue[0] ?? null;
-    let inputDisabled = state.currentPromptId !== null || currentReview !== null || state.partyEnded;
+    let inputDisabled = state.activePromptId !== null ||
+        currentReview !== null ||
+        state.partyEnded;
     if (state.viewingMember)
         inputDisabled = true;
     // ─── Party ended overlay ───
@@ -561,23 +798,13 @@ export default function App({ connection, session, inviteCode }) {
         // Viewing someone else's screen
         if (state.viewingMember) {
             const exec = state.memberExecutions[state.viewingMember];
-            return (_jsxs(Box, { flexDirection: "column", flexGrow: 1, borderStyle: "single", borderColor: "magenta", children: [_jsx(Box, { paddingX: 1, borderBottom: true, borderColor: "magenta", children: _jsxs(Text, { bold: true, color: "magenta", children: ["\uD83D\uDC40 Viewing ", state.viewingMember, "'s Screen (Ctrl+your index to exit)"] }) }), _jsx(Box, { flexDirection: "column", flexGrow: 1, children: exec ? (_jsx(ExecutionView, { execution: exec })) : (_jsx(Box, { flexDirection: "column", flexGrow: 1, justifyContent: "center", alignItems: "center", children: _jsxs(Text, { dimColor: true, children: [state.viewingMember, " is not currently executing a prompt."] }) })) })] }));
+            return (_jsxs(Box, { flexDirection: "column", flexGrow: 1, borderStyle: "single", borderColor: "magenta", children: [_jsx(Box, { paddingX: 1, borderBottom: true, borderColor: "magenta", children: _jsxs(Text, { bold: true, color: "magenta", children: ["Viewing ", state.viewingMember, "'", "s Screen (Ctrl+your index to exit)"] }) }), _jsx(Box, { flexDirection: "column", flexGrow: 1, children: exec ? (_jsx(ExecutionView, { execution: exec })) : (_jsx(Box, { flexDirection: "column", flexGrow: 1, justifyContent: "center", alignItems: "center", children: _jsxs(Text, { dimColor: true, children: [state.viewingMember, " ", "is not currently executing a prompt."] }) })) })] }));
         }
-        // Show merge progress
-        if (state.mergeInProgress && state.mergeStage) {
-            return (_jsxs(Box, { flexDirection: "column", flexGrow: 1, justifyContent: "center", alignItems: "center", children: [_jsx(Text, { bold: true, color: "cyan", children: "Merge in progress..." }), _jsx(Text, { dimColor: true, children: state.mergeStage })] }));
-        }
-        // Show ExecutionView for submitter during execution
-        if (state.execution && !state.execution.completed) {
-            return _jsx(ExecutionView, { execution: state.execution });
-        }
-        // Show completed execution
-        if (state.execution?.completed) {
-            return _jsx(ExecutionView, { execution: state.execution });
-        }
-        // Default: OutputView
-        return (_jsx(OutputView, { outputs: state.outputs, currentPromptId: state.currentPromptId }));
+        // Default: HistoryView (scrollable chat history)
+        return (_jsx(HistoryView, { history: state.history, expandedEntryId: state.expandedEntryId }));
     };
-    return (_jsxs(Box, { flexDirection: "column", height: height, children: [_jsx(StatusBar, { partyCode: state.partyCode, memberCount: state.members.length, connectionStatus: state.connectionStatus, executionBackendAvailable: state.executionBackendAvailable, inviteCode: state.isHost ? inviteCode : undefined }), _jsxs(Box, { flexDirection: "row", flexGrow: 1, children: [_jsx(PartyPanel, { members: state.members }), renderMainContent()] }), currentReview && state.isHost && !state.viewingMember && (_jsx(ReviewPanel, { request: currentReview, onApprove: handleApprove, onDeny: handleDeny })), _jsx(ActivityFeed, { events: state.events }), _jsx(PromptInput, { disabled: inputDisabled, onSubmit: handlePromptSubmit, onTyping: handleTyping, onIdle: handleIdle })] }));
+    return (_jsxs(Box, { flexDirection: "column", height: height, children: [_jsx(StatusBar, { partyCode: state.partyCode, memberCount: state.members.length, connectionStatus: state.connectionStatus, executionBackendAvailable: state.executionBackendAvailable, inviteCode: state.isHost ? inviteCode : undefined }), _jsxs(Box, { flexDirection: "row", flexGrow: 1, children: [_jsx(PartyPanel, { members: state.members }), renderMainContent()] }), currentReview &&
+                state.isHost &&
+                !state.viewingMember && (_jsx(ReviewPanel, { request: currentReview, onApprove: handleApprove, onDeny: handleDeny })), _jsx(ActivityFeed, { events: state.events }), _jsx(PromptInput, { disabled: inputDisabled, onSubmit: handlePromptSubmit, onTyping: handleTyping, onIdle: handleIdle })] }));
 }
 //# sourceMappingURL=App.js.map

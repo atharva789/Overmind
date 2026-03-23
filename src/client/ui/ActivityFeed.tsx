@@ -8,7 +8,7 @@ export interface ActivityEvent {
 }
 
 interface ActivityFeedProps {
-    events: ActivityEvent[];
+    events: readonly ActivityEvent[];
 }
 
 const MAX_EVENTS = 5;
