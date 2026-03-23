@@ -521,9 +521,22 @@ export class Orchestrator {
         const allowed: Record<string, string> = {};
         const rejected: string[] = [];
 
+        this.log(
+            promptId,
+            "modal",
+            `affectedFiles=[${evaluation.affectedFiles.join(", ")}]`
+        );
+
         for (const fileEntry of files) {
             const normalized = normalizeRelativePath(fileEntry.path);
-            if (isAllowedPath(normalized)) {
+            const accepted = isAllowedPath(normalized);
+            this.log(
+                promptId,
+                "modal",
+                `file: raw="${fileEntry.path}" `
+                    + `norm="${normalized}" allowed=${accepted}`
+            );
+            if (accepted) {
                 allowed[normalized] = fileEntry.content ?? "";
             } else {
                 rejected.push(normalized);

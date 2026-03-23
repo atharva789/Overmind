@@ -41,7 +41,6 @@ jobs:
                 IMAGE_TAG: ${{ steps.tag.outputs.TAG }}
               run: |
                 docker build \
-                  --platform linux/amd64 \
                   -f modal/.dockerfile \
                   -t $ECR_REPO:$IMAGE_TAG \
                   -t $ECR_REPO:latest \
