@@ -39,6 +39,9 @@ variable "ssm_parameter_names" {
     "OVERMIND_EMBEDDING_DIMS",
     "OVERMIND_EMBEDDING_MODEL",
     "OVERMIND_ORCHESTRATOR_URL",
+    "LANGFUSE_SECRET_KEY",
+    "LANGFUSE_PUBLIC_KEY",
+    "LANGFUSE_BASE_URL",
   ]
 }
 
