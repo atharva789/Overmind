@@ -1,11 +1,6 @@
 /**
- * Purpose: Compact one-line renderers for each agent stream
- *          event type inside the scrollable history.
- * High-level behavior: Maps AgentEventType to an icon + text
- *          representation. Supports an expanded mode (Ctrl+O)
- *          that shows full untruncated content.
- * Assumptions: Parent provides the entry and expansion state.
- * Invariants: Never exceeds one visual line when collapsed.
+ * Purpose: Claude Code-like renderers for agent stream events.
+ * Shows tool calls, thinking, agent lifecycle inline in history.
  */
 
 import React from "react";
@@ -18,145 +13,115 @@ interface AgentEventRowProps {
     readonly expanded: boolean;
 }
 
-const MAX_COLLAPSED_LENGTH = 80;
+const MAX_COLLAPSED = 120;
 
-/** Truncate text to a max length, appending ellipsis. */
-function truncate(text: string, maxLength: number): string {
-    if (text.length <= maxLength) return text;
-    return text.slice(0, maxLength - 1) + "\u2026";
+function truncate(text: string, max: number): string {
+    if (text.length <= max) return text;
+    return text.slice(0, max - 1) + "\u2026";
 }
 
-/** Extract a display string from the entry data. */
 function extractContent(entry: AgentEventEntry): string {
-    const data = entry.data;
-    if (typeof data["content"] === "string") return data["content"];
-    if (typeof data["summary"] === "string") return data["summary"];
-    if (typeof data["output"] === "string") return data["output"];
-    if (typeof data["stage"] === "string") return data["stage"];
-    if (typeof data["taskName"] === "string") {
-        return data["taskName"];
-    }
-    if (typeof data["toolName"] === "string") {
-        return data["toolName"];
-    }
+    const d = entry.data;
+    if (typeof d["content"] === "string") return d["content"];
+    if (typeof d["summary"] === "string") return d["summary"];
+    if (typeof d["outputPreview"] === "string") return d["outputPreview"];
+    if (typeof d["stage"] === "string") return d["stage"];
     return "";
 }
 
-function renderPlanReady(
-    entry: AgentEventEntry,
-    expanded: boolean
-): React.ReactElement {
-    const tasks = Array.isArray(entry.data["tasks"])
-        ? (entry.data["tasks"] as string[])
-        : [];
-    const summary = `Plan: ${tasks.length} task(s)`;
-
-    if (!expanded || tasks.length === 0) {
-        const taskNames = tasks.join(", ");
-        const display = taskNames
-            ? `${summary} - ${truncate(taskNames, MAX_COLLAPSED_LENGTH - summary.length - 3)}`
-            : summary;
-        return (
-            <Text>
-                <Text color="cyan" bold>{"# "}</Text>
-                <Text>{display}</Text>
-            </Text>
-        );
-    }
-
+function renderPlanReady(entry: AgentEventEntry, expanded: boolean): React.ReactElement {
+    const tasks = Array.isArray(entry.data["tasks"]) ? entry.data["tasks"] : [];
     return (
         <Box flexDirection="column">
-            <Text>
-                <Text color="cyan" bold>{"# "}</Text>
-                <Text bold>{summary}</Text>
-            </Text>
-            {tasks.map((task, index) => (
-                <Text key={index} dimColor>
-                    {"    "}{index + 1}. {String(task)}
-                </Text>
-            ))}
+            <Text color="cyan" bold>{"  Plan: "}{tasks.length} task(s)</Text>
+            {tasks.map((task: unknown, i: number) => {
+                const t = task as Record<string, unknown>;
+                const name = String(t?.["taskName"] ?? t ?? `Task ${i + 1}`);
+                const desc = typeof t?.["taskDescription"] === "string"
+                    ? ` — ${expanded ? t["taskDescription"] : truncate(t["taskDescription"] as string, 60)}`
+                    : "";
+                return (
+                    <Text key={i} dimColor>
+                        {"    "}{i + 1}. <Text color="white">{name}</Text>{desc}
+                    </Text>
+                );
+            })}
         </Box>
     );
 }
 
-function renderAgentSpawned(
-    entry: AgentEventEntry
-): React.ReactElement {
-    const taskName = String(entry.data["taskName"] ?? "agent");
+function renderAgentSpawned(entry: AgentEventEntry): React.ReactElement {
+    const name = String(entry.data["taskName"] ?? "agent");
+    const desc = typeof entry.data["taskDescription"] === "string"
+        ? truncate(entry.data["taskDescription"] as string, 80)
+        : "";
     return (
         <Box>
             <Spinner color="yellow" />
-            <Text> {taskName}</Text>
+            <Text color="yellow" bold> {name}</Text>
+            {desc ? <Text dimColor> — {desc}</Text> : null}
         </Box>
     );
 }
 
-function renderAgentFinished(
-    entry: AgentEventEntry,
-    expanded: boolean
-): React.ReactElement {
-    const taskName = String(entry.data["taskName"] ?? "agent");
+function renderAgentFinished(entry: AgentEventEntry, expanded: boolean): React.ReactElement {
+    const name = String(entry.data["taskName"] ?? "agent");
     const summary = extractContent(entry);
-    const display = expanded
-        ? summary
-        : truncate(summary, MAX_COLLAPSED_LENGTH);
+    const files = Array.isArray(entry.data["filesChanged"]) ? entry.data["filesChanged"] as string[] : [];
+    return (
+        <Box flexDirection="column">
+            <Text>
+                <Text color="green" bold>{"  ✓ "}{name}</Text>
+                {files.length > 0 && <Text dimColor> ({files.length} file{files.length > 1 ? "s" : ""})</Text>}
+            </Text>
+            {summary && (
+                <Text dimColor wrap="truncate">
+                    {"    "}{expanded ? summary : truncate(summary, MAX_COLLAPSED)}
+                </Text>
+            )}
+        </Box>
+    );
+}
 
+function renderToolStart(entry: AgentEventEntry): React.ReactElement {
+    const tool = String(entry.data["toolName"] ?? "tool");
+    const agent = String(entry.data["taskName"] ?? "");
     return (
         <Text>
-            <Text color="green" bold>{"+ "}</Text>
-            <Text bold>{taskName}</Text>
-            {display ? <Text dimColor> {display}</Text> : null}
+            <Text color="yellow">{"  ⚡ "}</Text>
+            <Text>{tool}</Text>
+            {agent ? <Text dimColor> ({agent})</Text> : null}
         </Text>
     );
 }
 
-function renderToolStart(
-    entry: AgentEventEntry
-): React.ReactElement {
-    const toolName = String(entry.data["toolName"] ?? "tool");
-    return (
-        <Text>
-            <Text color="yellow">{"* "}</Text>
-            <Text>{toolName}</Text>
-        </Text>
-    );
-}
-
-function renderToolResult(
-    entry: AgentEventEntry,
-    expanded: boolean
-): React.ReactElement {
-    const toolName = String(entry.data["toolName"] ?? "tool");
-    const success = entry.data["success"] !== false;
+function renderToolResult(entry: AgentEventEntry, expanded: boolean): React.ReactElement {
+    const tool = String(entry.data["toolName"] ?? "tool");
+    const ok = entry.data["success"] !== false;
     const output = extractContent(entry);
-    const display = expanded
-        ? output
-        : truncate(output, MAX_COLLAPSED_LENGTH);
-    const icon = success ? "+" : "x";
-    const color = success ? "green" : "red";
-
+    const display = expanded ? output : truncate(output, MAX_COLLAPSED);
     return (
-        <Text>
-            <Text color={color} bold>{icon} </Text>
-            <Text>{toolName}</Text>
-            {display ? <Text dimColor> {display}</Text> : null}
-        </Text>
+        <Box flexDirection="column">
+            <Text>
+                <Text color={ok ? "green" : "red"} bold>{ok ? "  ✓ " : "  ✗ "}</Text>
+                <Text>{tool}</Text>
+            </Text>
+            {display ? (
+                <Text dimColor wrap="truncate">{"    "}{display}</Text>
+            ) : null}
+        </Box>
     );
 }
 
-function renderThinking(
-    entry: AgentEventEntry,
-    expanded: boolean
-): React.ReactElement {
+function renderThinking(entry: AgentEventEntry, expanded: boolean): React.ReactElement {
     const content = extractContent(entry);
-    const display = expanded
-        ? content
-        : truncate(content, MAX_COLLAPSED_LENGTH);
-
+    const display = expanded ? content : truncate(content, MAX_COLLAPSED);
+    const agent = String(entry.data["taskName"] ?? "");
     return (
-        <Text>
-            <Text color="magenta" dimColor>{"~ "}</Text>
-            <Text dimColor>{display}</Text>
+        <Text wrap="truncate">
+            <Text color="magenta" dimColor>{"  💭 "}</Text>
+            {agent ? <Text dimColor>[{agent}] </Text> : null}
+            <Text dimColor italic>{display}</Text>
         </Text>
     );
 }
@@ -164,17 +129,14 @@ function renderThinking(
 function renderStage(entry: AgentEventEntry): React.ReactElement {
     const stage = String(entry.data["stage"] ?? "");
     return (
-        <Text>
-            <Text color="blue">{"- "}</Text>
+        <Box>
+            <Text color="blue">{"  → "}</Text>
             <Text>{stage}</Text>
-        </Text>
+        </Box>
     );
 }
 
-export default function AgentEventRow({
-    entry,
-    expanded,
-}: AgentEventRowProps): React.ReactElement {
+export default function AgentEventRow({ entry, expanded }: AgentEventRowProps): React.ReactElement {
     switch (entry.eventType) {
         case "plan-ready":
             return renderPlanReady(entry, expanded);
@@ -191,10 +153,6 @@ export default function AgentEventRow({
         case "stage":
             return renderStage(entry);
         default:
-            return (
-                <Text dimColor>
-                    {"  "}{extractContent(entry)}
-                </Text>
-            );
+            return <Text dimColor>{"  "}{extractContent(entry)}</Text>;
     }
 }
