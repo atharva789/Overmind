@@ -5,7 +5,7 @@ export interface MemberView {
     status: string;
 }
 interface PartyPanelProps {
-    members: MemberView[];
+    members: readonly MemberView[];
 }
 export default function PartyPanel({ members }: PartyPanelProps): React.ReactElement;
 export {};

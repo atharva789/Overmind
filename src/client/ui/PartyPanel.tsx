@@ -8,7 +8,7 @@ export interface MemberView {
 }
 
 interface PartyPanelProps {
-    members: MemberView[];
+    members: readonly MemberView[];
 }
 
 const STATUS_COLORS: Record<string, string> = {

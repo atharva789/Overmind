@@ -5,7 +5,7 @@ export interface ActivityEvent {
     timestamp: number;
 }
 interface ActivityFeedProps {
-    events: ActivityEvent[];
+    events: readonly ActivityEvent[];
 }
 export default function ActivityFeed({ events }: ActivityFeedProps): React.ReactElement;
 export {};
