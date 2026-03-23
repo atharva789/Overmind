@@ -1,12 +1,31 @@
-import { jsxs as _jsxs, jsx as _jsx } from "react/jsx-runtime";
+import { jsx as _jsx, jsxs as _jsxs } from "react/jsx-runtime";
+/**
+ * PromptInput.tsx
+ *
+ * Purpose: Prompt input component for the Overmind TUI. Handles
+ *   user text entry, typing/idle status signaling, and prompt
+ *   submission. Integrates @ file autocomplete for referencing
+ *   project files inline.
+ * Behavior: Renders a text input with a prompt indicator. When
+ *   the user types `@` followed by a partial path, an autocomplete
+ *   dropdown appears above the input. Tab cycles suggestions,
+ *   Enter accepts the selected suggestion, Escape dismisses.
+ * Assumptions: Mounted inside an Ink application. The cursor is
+ *   always at the end of the input (ink-text-input limitation).
+ * Invariants: Typing/idle signals are always balanced. Prompt
+ *   content is never leaked outside onSubmit.
+ */
 import { useState, useRef, useCallback, useEffect } from "react";
-import { Box, Text } from "ink";
+import { Box, Text, useInput } from "ink";
 import TextInput from "ink-text-input";
 import { nanoid } from "nanoid";
+import { useFileAutocomplete } from "./hooks/useFileAutocomplete.js";
+import AutocompleteDropdown from "./components/AutocompleteDropdown.js";
 export default function PromptInput({ disabled, onSubmit, onTyping, onIdle, }) {
     const [value, setValue] = useState("");
     const idleTimer = useRef(null);
     const isTyping = useRef(false);
+    const autocomplete = useFileAutocomplete(value);
     const clearIdleTimer = useCallback(() => {
         if (idleTimer.current) {
             clearTimeout(idleTimer.current);
@@ -22,7 +41,7 @@ export default function PromptInput({ disabled, onSubmit, onTyping, onIdle, }) {
             isTyping.current = true;
             onTyping();
         }
-        // Debounce idle signal — 1 second after last keystroke
+        // Debounce idle signal
         clearIdleTimer();
         idleTimer.current = setTimeout(() => {
             if (isTyping.current) {
@@ -32,12 +51,22 @@ export default function PromptInput({ disabled, onSubmit, onTyping, onIdle, }) {
         }, 1000);
     }, [onTyping, onIdle, clearIdleTimer]);
     const handleSubmit = useCallback((input) => {
+        // When autocomplete is active, Enter accepts the
+        // suggestion instead of submitting the prompt.
+        if (autocomplete.isActive) {
+            const newValue = autocomplete.accept();
+            setValue(newValue);
+            return;
+        }
         const trimmed = input.trim();
         if (!trimmed)
             return;
         // Allow ! shell and / slash commands even when disabled
-        if (disabled && !trimmed.startsWith("!") && !trimmed.startsWith("/"))
+        if (disabled &&
+            !trimmed.startsWith("!") &&
+            !trimmed.startsWith("/")) {
             return;
+        }
         const promptId = nanoid(12);
         onSubmit(promptId, trimmed);
         setValue("");
@@ -47,11 +76,27 @@ export default function PromptInput({ disabled, onSubmit, onTyping, onIdle, }) {
             isTyping.current = false;
             onIdle();
         }
-    }, [disabled, onSubmit, onIdle, clearIdleTimer]);
+    }, [
+        disabled,
+        onSubmit,
+        onIdle,
+        clearIdleTimer,
+        autocomplete,
+    ]);
+    // Handle Tab for cycling and Escape for dismissal.
+    // useInput receives keys that ink-text-input does not consume.
+    useInput(useCallback((_input, key) => {
+        if (key.tab && autocomplete.isActive) {
+            autocomplete.cycle();
+        }
+        if (key.escape && autocomplete.isActive) {
+            autocomplete.dismiss();
+        }
+    }, [autocomplete]));
     const promptColor = disabled ? "yellow" : "green";
     const placeholder = disabled
         ? "Executing... (! for shell commands)"
-        : "Type a prompt... (! for shell commands)";
-    return (_jsxs(Box, { paddingX: 1, children: [_jsxs(Text, { color: promptColor, bold: true, children: [">", " "] }), _jsx(TextInput, { value: value, onChange: handleChange, onSubmit: handleSubmit, placeholder: placeholder })] }));
+        : "Type a prompt... (@ for files)";
+    return (_jsxs(Box, { flexDirection: "column", children: [_jsx(AutocompleteDropdown, { suggestions: autocomplete.suggestions, selectedIndex: autocomplete.selectedIndex, visible: autocomplete.isActive }), _jsxs(Box, { paddingX: 1, children: [_jsxs(Text, { color: promptColor, bold: true, children: [">", " "] }), _jsx(TextInput, { value: value, onChange: handleChange, onSubmit: handleSubmit, placeholder: placeholder })] })] }));
 }
 //# sourceMappingURL=PromptInput.js.map
