@@ -154,6 +154,7 @@ export class Orchestrator {
             let runResult: RunCompletion | null = null;
 
             // Stream events in real-time via WebSocket
+            this.log(promptId, mode, "[WS-DEBUG] attempting WS stream...");
             try {
                 for await (const event of this.streamRun(promptId, runId)) {
                     if (event.type === "run-complete" || event.type === "error") {
@@ -173,7 +174,7 @@ export class Orchestrator {
                 };
             } catch (streamErr) {
                 // WS failed — fall back to poll loop
-                this.log(promptId, mode, `ws stream failed: ${streamErr}, falling back to poll`);
+                this.log(promptId, mode, `[WS-DEBUG] FAILED: ${streamErr}, falling back to poll`);
                 for await (const event of this.pollRun(
                     promptId, runId, client, STAGE_SPAWN
                 )) {
@@ -385,6 +386,8 @@ export class Orchestrator {
             .replace(/^http/u, "ws");
         const wsUrl = `${baseUrl}/runs/${runId}/ws`;
 
+        this.log(promptId, "modal", `[WS-DEBUG] connecting to: ${wsUrl}`);
+
         const ws = new WebSocket(wsUrl);
 
         // Async queue: WS callbacks push, generator awaits
@@ -404,30 +407,40 @@ export class Orchestrator {
         // Wait for connection
         await new Promise<void>((resolve, reject) => {
             ws.on("open", () => {
-                this.log(promptId, "modal", "ws stream: connected");
+                this.log(promptId, "modal", `[WS-DEBUG] connection OPEN`);
                 resolve();
             });
             ws.on("error", (err: Error) => {
+                this.log(promptId, "modal", `[WS-DEBUG] connection ERROR during handshake: ${err.message}`);
                 reject(err);
             });
         });
 
         ws.on("message", (data: Buffer) => {
+            const raw_str = data.toString().substring(0, 200);
+            this.log(promptId, "modal", `[WS-DEBUG] message received: ${raw_str}`);
             try {
                 const raw = JSON.parse(data.toString());
                 const mapped = this.mapStreamEvent(raw);
-                if (mapped) push(mapped);
-            } catch {
-                // skip malformed
+                if (mapped) {
+                    this.log(promptId, "modal", `[WS-DEBUG] mapped event: ${mapped.type}`);
+                    push(mapped);
+                } else {
+                    this.log(promptId, "modal", `[WS-DEBUG] unmapped event_type: ${raw.event_type}`);
+                }
+            } catch (e) {
+                this.log(promptId, "modal", `[WS-DEBUG] parse error: ${e}`);
             }
         });
 
-        ws.on("close", () => {
+        ws.on("close", (code: number, reason: Buffer) => {
+            this.log(promptId, "modal", `[WS-DEBUG] connection CLOSED code=${code} reason=${reason.toString()}`);
             closed = true;
             notify?.();
         });
 
         ws.on("error", (err: Error) => {
+            this.log(promptId, "modal", `[WS-DEBUG] connection ERROR: ${err.message}`);
             wsError = err;
             closed = true;
             notify?.();
