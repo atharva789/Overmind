@@ -404,29 +404,16 @@ export class Orchestrator {
         const waitForEvent = () =>
             new Promise<void>((resolve) => { notify = resolve; });
 
-        // Wait for connection
-        await new Promise<void>((resolve, reject) => {
-            ws.on("open", () => {
-                this.log(promptId, "modal", `[WS-DEBUG] connection OPEN`);
-                resolve();
-            });
-            ws.on("error", (err: Error) => {
-                this.log(promptId, "modal", `[WS-DEBUG] connection ERROR during handshake: ${err.message}`);
-                reject(err);
-            });
-        });
-
+        // Register ALL handlers BEFORE waiting for open — prevents dropped frames
         ws.on("message", (data: Buffer) => {
-            const raw_str = data.toString().substring(0, 200);
-            this.log(promptId, "modal", `[WS-DEBUG] message received: ${raw_str}`);
+            this.log(promptId, "modal", `[WS-DEBUG] msg: ${data.toString().substring(0, 120)}`);
             try {
                 const raw = JSON.parse(data.toString());
                 const mapped = this.mapStreamEvent(raw);
                 if (mapped) {
-                    this.log(promptId, "modal", `[WS-DEBUG] mapped event: ${mapped.type}`);
                     push(mapped);
                 } else {
-                    this.log(promptId, "modal", `[WS-DEBUG] unmapped event_type: ${raw.event_type}`);
+                    this.log(promptId, "modal", `[WS-DEBUG] unmapped: ${raw.event_type}`);
                 }
             } catch (e) {
                 this.log(promptId, "modal", `[WS-DEBUG] parse error: ${e}`);
@@ -434,16 +421,35 @@ export class Orchestrator {
         });
 
         ws.on("close", (code: number, reason: Buffer) => {
-            this.log(promptId, "modal", `[WS-DEBUG] connection CLOSED code=${code} reason=${reason.toString()}`);
+            this.log(promptId, "modal", `[WS-DEBUG] CLOSED code=${code} reason=${reason.toString()}`);
             closed = true;
             notify?.();
         });
 
         ws.on("error", (err: Error) => {
-            this.log(promptId, "modal", `[WS-DEBUG] connection ERROR: ${err.message}`);
+            this.log(promptId, "modal", `[WS-DEBUG] ERROR: ${err.message}`);
             wsError = err;
             closed = true;
             notify?.();
+        });
+
+        // Now wait for connection (handlers already registered)
+        await new Promise<void>((resolve, reject) => {
+            if (ws.readyState === WebSocket.OPEN) {
+                this.log(promptId, "modal", `[WS-DEBUG] already OPEN`);
+                resolve();
+                return;
+            }
+            ws.on("open", () => {
+                this.log(promptId, "modal", `[WS-DEBUG] OPEN`);
+                resolve();
+            });
+            // error handler already registered above — add reject on first error
+            const onErr = (err: Error) => {
+                ws.off("error", onErr);
+                reject(err);
+            };
+            ws.on("error", onErr);
         });
 
         try {

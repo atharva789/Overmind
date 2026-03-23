@@ -628,6 +628,13 @@ async def get_run(run_id: str) -> dict[str, object]:
     except KeyError:
         raise HTTPException(status_code=404, detail="run not found")
     result = run_record_to_dict(record)
+    # Debug: log file info when run completes
+    if result.get("status") == "completed" and result.get("files"):
+        files = result["files"]
+        log(f"get_run: run_id={run_id} returning {len(files)} files")
+        for f in files[:5]:
+            has_content = bool(f.get("content"))
+            log(f"get_run:   path={f.get('path')} has_content={has_content} content_len={len(f.get('content', ''))}")
     # Include streaming events in poll response (no WS dependency)
     session = get_session(run_id)
     if session:
