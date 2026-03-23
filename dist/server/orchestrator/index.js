@@ -192,9 +192,13 @@ export class Orchestrator {
         const isAllowedPath = buildAllowedPathChecker(evaluation, OVERMIND_WRITE_ALLOWLIST());
         const allowed = {};
         const rejected = [];
+        this.log(promptId, "modal", `affectedFiles=[${evaluation.affectedFiles.join(", ")}]`);
         for (const fileEntry of files) {
             const normalized = normalizeRelativePath(fileEntry.path);
-            if (isAllowedPath(normalized)) {
+            const accepted = isAllowedPath(normalized);
+            this.log(promptId, "modal", `file: raw="${fileEntry.path}" `
+                + `norm="${normalized}" allowed=${accepted}`);
+            if (accepted) {
                 allowed[normalized] = fileEntry.content;
             }
             else {
