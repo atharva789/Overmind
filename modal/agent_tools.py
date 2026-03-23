@@ -272,13 +272,30 @@ TOOL_SCHEMAS: list[dict] = [
 # ─── Tool handlers (all async) ───────────────────────────────────────────────
 
 
+def _normalize_tool_path(raw_path: str) -> str:
+    """
+    Normalize a file path provided by the LLM to a clean relative form.
+    Strips common prefixes (/app/, workspace/, ./, leading /) that the
+    LLM may hallucinate. Does not access the filesystem.
+    Edge cases: Empty strings pass through unchanged.
+    Invariants: Returned path never starts with '/' or './'.
+    """
+    return (
+        raw_path
+        .lstrip("/")
+        .removeprefix("./")
+        .removeprefix("app/")
+        .removeprefix("workspace/")
+    )
+
+
 async def _read_file(
     args: dict,
     req_files: dict[str, str],
     workspace: dict[str, str],
     ctx: dict[str, Any],
 ) -> str:
-    path = args.get("path", "")
+    path = _normalize_tool_path(args.get("path", ""))
     if path in workspace:
         return workspace[path]
     if path in req_files:
@@ -292,7 +309,7 @@ async def _write_file(
     workspace: dict[str, str],
     ctx: dict[str, Any],
 ) -> str:
-    path = args.get("path", "")
+    path = _normalize_tool_path(args.get("path", ""))
     content = args.get("content", "")
     workspace[path] = content
     return f"OK: wrote {len(content)} chars to {path}"

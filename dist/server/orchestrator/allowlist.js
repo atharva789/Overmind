@@ -11,7 +11,12 @@
  * Invariants: Returned paths never contain backslashes.
  */
 export function normalizeRelativePath(relPath) {
-    return relPath.replace(/\\/g, "/");
+    return relPath
+        .replace(/\\/g, "/")
+        .replace(/^\.\//, "")
+        .replace(/^\/+/, "")
+        .replace(/^app\//, "")
+        .replace(/^workspace\//, "");
 }
 /**
  * Detect suffix-only patterns (like .md).
@@ -56,6 +61,13 @@ export function buildAllowedPathChecker(evaluation, allowlistPatterns) {
             return true;
         }
         if (allowedPaths.has(normalized))
+            return true;
+        // Suffix fallback: if normalization missed a prefix, check
+        // whether any affected file is a suffix of the incoming path
+        // (e.g. incoming "some/prefix/src/foo.ts" matches "src/foo.ts").
+        const suffixMatch = [...allowedPaths].some((allowed) => normalized.endsWith(`/${allowed}`)
+            || allowed.endsWith(`/${normalized}`));
+        if (suffixMatch)
             return true;
         return normalizedAllowlist.some((pattern) => matchesAllowlistPattern(normalized, pattern));
     };
