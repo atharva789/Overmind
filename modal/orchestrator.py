@@ -627,7 +627,12 @@ async def get_run(run_id: str) -> dict[str, object]:
         record = await read_run_record(run_id)
     except KeyError:
         raise HTTPException(status_code=404, detail="run not found")
-    return run_record_to_dict(record)
+    result = run_record_to_dict(record)
+    # Include streaming events in poll response (no WS dependency)
+    session = get_session(run_id)
+    if session:
+        result["events"] = session.drain_new_events()
+    return result
 
 
 @web_app.post("/runs/{run_id}/cancel")

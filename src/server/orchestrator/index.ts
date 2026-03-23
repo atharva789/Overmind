@@ -340,6 +340,14 @@ export class Orchestrator {
             const status = await client.getRun(runId);
             this.logRunDetail(promptId, status);
 
+            // Yield streaming events from poll response (no WS dependency)
+            if (status.events) {
+                for (const raw of status.events) {
+                    const mapped = this.mapStreamEvent(raw as Record<string, unknown>);
+                    if (mapped) yield mapped;
+                }
+            }
+
             const stage = this.normalizeStage(status.stage);
             if (stage && stage !== lastStage) {
                 lastStage = stage;

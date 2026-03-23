@@ -27,16 +27,26 @@ class Session:
         self.run_id = run_id
         self.queue: asyncio.Queue[StreamEvent] = asyncio.Queue()
         self.closed = False
+        self._event_log: list[dict] = []
+        self._cursor = 0  # tracks what the poller has already seen
 
     def emit(self, event: StreamEvent) -> None:
         """Fire-and-forget push. Safe to call from any coroutine in the loop."""
         if not self.closed:
+            dumped = event.model_dump()
             logger.info(
                 "[real-time-tag] run_id=%s event=%s",
                 self.run_id,
-                json.dumps(event.model_dump(), default=str),
+                json.dumps(dumped, default=str),
             )
+            self._event_log.append(dumped)
             self.queue.put_nowait(event)
+
+    def drain_new_events(self) -> list[dict]:
+        """Return events emitted since the last drain call (for poll endpoint)."""
+        new = self._event_log[self._cursor:]
+        self._cursor = len(self._event_log)
+        return new
 
     async def subscribe(self) -> AsyncGenerator[StreamEvent, None]:
         """Yields events until a terminal event (RunComplete/RunError)."""

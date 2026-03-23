@@ -27,6 +27,7 @@ export interface RunStatus {
     files?: Array<{ path: string; content?: string }>;
     summary?: string;
     error?: string;
+    events?: Array<Record<string, unknown>>;
 }
 
 type LogFn = (message: string) => void;
@@ -50,6 +51,7 @@ const RunStatusSchema = z.object({
     ).optional(),
     summary: z.string().optional(),
     error: z.string().optional(),
+    events: z.array(z.record(z.unknown())).optional(),
 });
 
 const RunCancelResponseSchema = z.object({
