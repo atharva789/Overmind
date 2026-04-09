@@ -15,7 +15,7 @@ from typing import Any, Optional
 
 from pydantic import BaseModel
 
-from utils import now_iso
+from utils import log, now_iso
 
 # ─── Status / Stage constants ────────────────────────────────────────────────
 
@@ -176,12 +176,20 @@ async def mark_run_failed(run_id: str, stage: str, detail: str, error: str) -> N
 
 
 async def mark_run_completed(run_id: str, result: AgentResult) -> None:
+    # Explicitly construct FileChange dicts to ensure content is always present
+    files = [
+        FileChange(path=f.path, content=f.content)
+        for f in result.files
+    ]
+    log(f"mark_run_completed: run_id={run_id} files={len(files)}")
+    for f in files[:5]:
+        log(f"  file: path={f.path} content_len={len(f.content)}")
     await update_run_record(
         run_id,
         {
             "status": STATUS_COMPLETED,
             "stage": STAGE_EXTRACTING,
-            "files": [f.model_dump() for f in result.files],
+            "files": [{"path": f.path, "content": f.content} for f in files],
             "summary": result.summary,
         },
     )

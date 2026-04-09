@@ -95,3 +95,5 @@ regex==2026.2.28              # fastembed tokenizer dependency
 toml==0.10.2                  # config parsing
 cbor2==5.8.0                  # fastembed/HF serialization
 setuptools==82.0.1            # pkg_resources (runtime dependency for some libs)
+websockets>=12.0
+# cache-bust 1774295560

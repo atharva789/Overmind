@@ -55,6 +55,7 @@ interface AppState {
     readonly partyEnded: boolean;
     readonly mergeInProgress: boolean;
     readonly mergeStage: string | null;
+    readonly scrollOffset: number;
 }
 
 const initialState: AppState = {
@@ -63,6 +64,7 @@ const initialState: AppState = {
     history: [],
     activePromptId: null,
     expandedEntryId: null,
+    scrollOffset: 0,
     events: [],
     connectionStatus: "disconnected",
     isHost: false,
@@ -163,7 +165,10 @@ type Action =
           summary: string;
       }
     | { type: "MERGE_ERROR"; message: string }
-    | { type: "TOGGLE_EXPAND" };
+    | { type: "TOGGLE_EXPAND" }
+    | { type: "SCROLL_UP" }
+    | { type: "SCROLL_DOWN" }
+    | { type: "SCROLL_BOTTOM" };
 
 // ─── Helpers ───
 
@@ -193,7 +198,7 @@ function appendHistory(
 
 // ─── Reducer ───
 
-function reducer(state: AppState, action: Action): AppState {
+function rawReducer(state: AppState, action: Action): AppState {
     switch (action.type) {
         case "CONNECTED":
             return { ...state, connectionStatus: "connected" };
@@ -566,7 +571,6 @@ function reducer(state: AppState, action: Action): AppState {
             };
 
         case "TOGGLE_EXPAND": {
-            // Find the most recent agent-event entry
             const lastAgentEvent = [...state.history]
                 .reverse()
                 .find((e) => e.kind === "agent-event");
@@ -578,9 +582,37 @@ function reducer(state: AppState, action: Action): AppState {
             return { ...state, expandedEntryId: nextId };
         }
 
+        case "SCROLL_UP":
+            return {
+                ...state,
+                scrollOffset: Math.min(
+                    state.scrollOffset + 3,
+                    Math.max(0, state.history.length - 3)
+                ),
+            };
+
+        case "SCROLL_DOWN":
+            return {
+                ...state,
+                scrollOffset: Math.max(0, state.scrollOffset - 3),
+            };
+
+        case "SCROLL_BOTTOM":
+            return { ...state, scrollOffset: 0 };
+
         default:
             return state;
     }
+}
+
+/** Auto-scroll to bottom when new history entries arrive (if user is at bottom). */
+function reducer(state: AppState, action: Action): AppState {
+    const prev = state.history.length;
+    const next = rawReducer(state, action);
+    if (next.history.length > prev && state.scrollOffset === 0) {
+        return { ...next, scrollOffset: 0 };
+    }
+    return next;
 }
 
 // ─── App ───
@@ -610,8 +642,21 @@ export default function App({
                     return;
                 }
 
-                // Ctrl+O: toggle expand on most recent
-                // agent-event entry
+                // Scroll: up/down arrows, Ctrl+B = bottom
+                if (key.upArrow) {
+                    dispatch({ type: "SCROLL_UP" });
+                    return;
+                }
+                if (key.downArrow) {
+                    dispatch({ type: "SCROLL_DOWN" });
+                    return;
+                }
+                if (key.ctrl && input === "b") {
+                    dispatch({ type: "SCROLL_BOTTOM" });
+                    return;
+                }
+
+                // Ctrl+O: toggle expand on most recent agent-event
                 if (key.ctrl && input === "o") {
                     dispatch({ type: "TOGGLE_EXPAND" });
                     return;
@@ -1099,6 +1144,7 @@ export default function App({
             <HistoryView
                 history={state.history}
                 expandedEntryId={state.expandedEntryId}
+                scrollOffset={state.scrollOffset}
             />
         );
     };

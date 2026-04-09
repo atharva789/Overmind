@@ -1,13 +1,7 @@
 /**
- * Purpose: Scrollable list that renders the full chat history,
- *          replacing the old OutputView in the main content area.
- * High-level behavior: Renders all HistoryEntry items in a
- *          vertical list. Auto-scrolls to the bottom on new
- *          entries. Each entry type has a dedicated renderer.
- * Assumptions: Parent provides the full history array and the
- *          currently expanded entry id (if any).
- * Invariants: History entries are never mutated; the list is
- *             append-only from the reducer.
+ * Purpose: Scrollable chat history — Claude Code-like layout.
+ * Renders all HistoryEntry items vertically with auto-scroll.
+ * Supports manual scroll via scrollOffset prop from parent.
  */
 
 import React from "react";
@@ -31,6 +25,7 @@ import type {
 interface HistoryViewProps {
     readonly history: readonly HistoryEntry[];
     readonly expandedEntryId: string | null;
+    readonly scrollOffset: number;
 }
 
 // ─── Status styling ───
@@ -48,13 +43,11 @@ const STATUS_COLORS: Record<string, string> = {
 
 // ─── Entry renderers ───
 
-function renderUserPrompt(
-    entry: UserPromptEntry
-): React.ReactElement {
+function renderUserPrompt(entry: UserPromptEntry): React.ReactElement {
     return (
-        <Box>
-            <Text color="white" bold>{">"} </Text>
-            <Text>{entry.content}</Text>
+        <Box marginY={0}>
+            <Text color="green" bold>{"> "}</Text>
+            <Text wrap="wrap">{entry.content}</Text>
         </Box>
     );
 }
@@ -64,49 +57,36 @@ function renderStatus(entry: StatusEntry): React.ReactElement {
     const label = entry.status.toUpperCase().replace(/-/g, " ");
 
     return (
-        <Box flexDirection="column">
-            <Box>
-                <Badge label={label} color={color} />
-                {entry.status === "queued" && (
-                    <Spinner color="blue" />
-                )}
-            </Box>
-            <Text color="gray" wrap="truncate">
-                {"  "}{entry.message}
-            </Text>
+        <Box>
+            <Text>  </Text>
+            <Badge label={label} color={color} />
+            {entry.status === "queued" && <Spinner color="blue" />}
+            <Text dimColor wrap="truncate"> {entry.message}</Text>
         </Box>
     );
 }
 
-function renderAgentEvent(
-    entry: AgentEventEntry,
-    expanded: boolean
-): React.ReactElement {
-    return (
-        <AgentEventRow entry={entry} expanded={expanded} />
-    );
+function renderAgentEvent(entry: AgentEventEntry, expanded: boolean): React.ReactElement {
+    return <AgentEventRow entry={entry} expanded={expanded} />;
 }
 
-function renderCompletion(
-    entry: CompletionEntry
-): React.ReactElement {
+function renderCompletion(entry: CompletionEntry): React.ReactElement {
+    const totalAdded = entry.files.reduce((s, f) => s + f.linesAdded, 0);
+    const totalRemoved = entry.files.reduce((s, f) => s + f.linesRemoved, 0);
+
     return (
         <Box flexDirection="column">
-            <Text bold color="green">
-                {"+"} Execution Complete
+            <Text color="green" bold>
+                {"  ✓ Applied "}{entry.files.length} file(s) (+{totalAdded}/-{totalRemoved}).
             </Text>
-            {entry.files.map((file, fileIndex) => (
-                <Box
-                    key={`${entry.id}-file-${fileIndex}`}
-                    flexDirection="column"
-                >
-                    <DiffBlock
-                        filename={file.path}
-                        diff={file.diff}
-                    />
+            {entry.files.map((file, i) => (
+                <Box key={`${entry.id}-f-${i}`} flexDirection="column">
+                    <DiffBlock filename={file.path} diff={file.diff} />
                 </Box>
             ))}
-            <Text bold>{entry.summary}</Text>
+            {entry.summary && (
+                <Text dimColor wrap="truncate">{"  "}{entry.summary}</Text>
+            )}
         </Box>
     );
 }
@@ -114,97 +94,74 @@ function renderCompletion(
 function renderShell(entry: ShellEntry): React.ReactElement {
     return (
         <Box flexDirection="column">
-            <Text color="yellow">{"$"} {entry.command}</Text>
-            <Text dimColor>{entry.output}</Text>
+            <Text color="yellow" bold>{"  $ "}{entry.command}</Text>
+            <Text dimColor wrap="truncate">{"    "}{entry.output}</Text>
         </Box>
     );
 }
 
 function renderMerge(entry: MergeEntry): React.ReactElement {
     const isError = entry.status === "error";
-    const color = isError ? "red" : "cyan";
-
     return (
         <Box>
-            <Badge
-                label={isError ? "MERGE ERROR" : "MERGE"}
-                color={color}
-            />
-            <Text color="gray"> {entry.message}</Text>
+            <Text>  </Text>
+            <Badge label={isError ? "MERGE ERROR" : "MERGE"} color={isError ? "red" : "cyan"} />
+            <Text dimColor> {entry.message}</Text>
         </Box>
     );
 }
 
 // ─── Render dispatcher ───
 
-function renderEntry(
-    entry: HistoryEntry,
-    expandedEntryId: string | null
-): React.ReactElement {
+function renderEntry(entry: HistoryEntry, expandedId: string | null): React.ReactElement {
     switch (entry.kind) {
-        case "user-prompt":
-            return renderUserPrompt(entry);
-        case "status":
-            return renderStatus(entry);
-        case "agent-event":
-            return renderAgentEvent(
-                entry,
-                entry.id === expandedEntryId
-            );
-        case "completion":
-            return renderCompletion(entry);
-        case "shell":
-            return renderShell(entry);
-        case "merge":
-            return renderMerge(entry);
+        case "user-prompt": return renderUserPrompt(entry);
+        case "status": return renderStatus(entry);
+        case "agent-event": return renderAgentEvent(entry, entry.id === expandedId);
+        case "completion": return renderCompletion(entry);
+        case "shell": return renderShell(entry);
+        case "merge": return renderMerge(entry);
     }
 }
 
 // ─── Main component ───
 
-const MAX_VISIBLE_ENTRIES = 50;
-
 export default function HistoryView({
     history,
     expandedEntryId,
+    scrollOffset,
 }: HistoryViewProps): React.ReactElement {
     const { stdout } = useStdout();
-    const terminalHeight = stdout?.rows ?? 30;
+    const height = (stdout?.rows ?? 30) - 8; // reserve space for header, input, activity
 
-    // Compute visible window: show the most recent entries
-    // that fit in the available terminal space.
-    const maxItems = Math.min(
-        MAX_VISIBLE_ENTRIES,
-        Math.max(terminalHeight - 10, 3)
-    );
-    const visible = history.slice(-maxItems);
-
-    if (visible.length === 0) {
+    if (history.length === 0) {
         return (
-            <Box
-                flexDirection="column"
-                flexGrow={1}
-                paddingX={1}
-            >
-                <Text dimColor>
-                    No active prompt. Type a prompt below
-                    to get started.
-                </Text>
+            <Box flexDirection="column" flexGrow={1} paddingX={1}>
+                <Text dimColor>No active prompt. Type a prompt below to get started.</Text>
             </Box>
         );
     }
 
+    // scrollOffset=0 means "at bottom" (most recent). Positive = scrolled up.
+    const endIndex = history.length - scrollOffset;
+    const startIndex = Math.max(0, endIndex - Math.max(height, 5));
+    const visible = history.slice(startIndex, endIndex);
+    const atBottom = scrollOffset === 0;
+    const atTop = startIndex === 0;
+
     return (
-        <Box
-            flexDirection="column"
-            flexGrow={1}
-            paddingX={1}
-        >
+        <Box flexDirection="column" flexGrow={1} paddingX={1} overflow="hidden">
+            {!atTop && (
+                <Text dimColor italic>{"  ↑ "}{startIndex} earlier entries (scroll up)</Text>
+            )}
             {visible.map((entry) => (
-                <Box key={entry.id}>
+                <Box key={entry.id} flexDirection="column">
                     {renderEntry(entry, expandedEntryId)}
                 </Box>
             ))}
+            {!atBottom && (
+                <Text dimColor italic>{"  ↓ "}{scrollOffset} newer entries (scroll down)</Text>
+            )}
         </Box>
     );
 }
