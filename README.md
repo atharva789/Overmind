@@ -16,10 +16,10 @@ Read this before any capability claim further down.
 | Remote orchestrator | Code exists (`modal/`). FastAPI service, planner + parallel subagents. CI builds and pushes Docker image to ECR. Not verified end-to-end in production. |
 | AI merge resolution | Code exists (`src/server/merge/`). 3-way diff with confidence scoring, auto PR creation via `simple-git`. |
 | Story agent (pgvector) | Code exists (`src/server/story/`). Clusters prompts into features using embeddings. |
-| Langfuse observability | Wired in the remote orchestrator. Not in the local execution path. |
+| Langfuse observability | Dependency exists in `modal/requirements.txt`. Not in the local execution path. No env vars in `.env.example` -- likely configured via SSM or task environment. |
 | Terraform infra | Defined (`infra/`). ECS Fargate, ALB, ECR, CloudWatch, SSM. |
 | Tests | 4 JS test files covering orchestrator internals (file-lock, file-sync, index, result). 1 Python test file for the remote orchestrator. Protocol, merge resolver, story agent, and Gemini agent loop have no tests. |
-| CI | Builds Docker image and pushes to ECR. Does not run tests. |
+| CI | Path-filtered to `modal/**` only. Builds Docker image and pushes to ECR. Does not run tests. TypeScript changes get no CI. |
 
 ## Architecture
 
@@ -60,6 +60,7 @@ git clone git@github.com:atharva789/Overmind.git
 cd Overmind
 npm install
 npm run build
+npm link          # puts `overmind` on your PATH
 ```
 
 Copy and fill in the environment file:
@@ -100,10 +101,10 @@ See `.env.example` for the full list. The important ones:
 | `GEMINI_API_KEY` | Required. Powers local execution and scope extraction. |
 | `OVERMIND_LOCAL` | Set to `1` for local execution mode. |
 | `OVERMIND_ORCHESTRATOR_URL` | ALB endpoint for remote execution (ECS Fargate). |
-| `OPENAI_API_KEY` | Used by the remote orchestrator's planner and subagents. |
-| `SUPABASE_URL`, `SUPABASE_ANON_KEY` | PostgreSQL + pgvector for story clustering. |
+| `OVERMIND_DATABASE_URL` | PostgreSQL connection string for pgvector story clustering. |
+| `OVERMIND_LLM_URL` | OpenAI-compatible endpoint for orchestrator and merge resolver. Falls back to `OPENAI_API_KEY` if unset. |
 | `GITHUB_TOKEN` | Merge resolver uses this for PR creation. |
-| `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY` | Observability (remote orchestrator only). |
+| `NGROK_AUTHTOKEN` | Optional. Expose a local session over the internet. |
 
 ## Repository layout
 
@@ -126,6 +127,3 @@ landing/                    # Next.js marketing site (Vercel)
 tests/                      # JS + Python tests
 ```
 
-## License
-
-MIT
